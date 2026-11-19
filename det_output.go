@@ -88,7 +88,7 @@ func detectFormula(g *Guard, in *input, emit func(RuleID, int)) {
 
 // formulaCallRe: a function that reaches outside the sheet, or a DDE call (server|'command').
 var formulaCallRe = regexp.MustCompile(`(?i)\b(?:hyperlink|webservice|importxml|importdata|importhtml|importfeed|` +
-	`importrange|image|filterxml|call|register(?:\.id)?|exec|rtd|dde)\s*\(|[a-z0-9_.]+\|\s*'|\bcmd\s*\|`)
+	`importrange|image|filterxml|call|register(?:\.id)?|exec|rtd|dde)\(|[a-z0-9_.]+\|\s*'|\bcmd\s*\|`)
 
 // --- SSRF ---
 

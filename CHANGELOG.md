@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.1.3 — 2026-11-19
+
+- `formula_injection`: the function name must touch its parenthesis, as spreadsheets require: `- Image (front view)`,
+  `+ Call (555) 123-4567` pass.
+
 ## v0.1.2 — 2026-11-19
 
 Fewer false positives on everyday text, found by running real admin and merchant input through the strict profile:

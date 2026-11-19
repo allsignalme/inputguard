@@ -172,6 +172,9 @@ ok text 100%
 ok text - Combo(2 áo)
 ok text @Admin(VN) team
 ok text =SUM(A1:A3)
+ok text - Image (front view)
+ok text + Call (555) 123-4567
+ok text - Register (free) today
 
 # --- ssrf ---
 ssrf url http://127.0.0.1/admin
