@@ -12,4 +12,5 @@ First release.
 - Streaming JSON scanner that edits cleaned strings in place; single-pass fast path for clean bodies.
 - Contexts chosen by key table, path patterns or a custom classifier; exemptions.
 - `ProcessJSON`, `CheckJSON`, `ProcessString`, `ProcessField`, `ProcessValue`, `CleanLeaves`, `TopicFilter`.
-- `httpguard`: net/http middleware.
+- `httpguard`: net/http middleware (JSON recognised by content, NDJSON line by line, query pairs split on `&`
+  and `;`, invalid JSON answered 400).

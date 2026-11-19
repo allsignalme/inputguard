@@ -252,35 +252,40 @@ func jsonLines(r *http.Request) bool {
 	return false
 }
 
-// lines processes a newline-delimited body document by document; blank lines and record separators are kept.
+// lines processes a body of several JSON documents (NDJSON, JSON Lines, JSON text sequences) document by
+// document. Documents are delimited the way a streaming decoder reads them, not by line: a document may span lines.
+// What lies between documents (line breaks, record separators) is kept.
 func (cfg Config) lines(data []byte) ([]byte, inputguard.Report, bool) {
+	scan := bytes.ReplaceAll(data, []byte{0x1e}, []byte{' '}) // RFC 7464 record separators, same length
+	dec := json.NewDecoder(bytes.NewReader(scan))
 	var all inputguard.Report
 	var out []byte
-	changed := false
-	for n, line := range bytes.SplitAfter(data, []byte("\n")) {
-		body := bytes.TrimRight(bytes.TrimLeft(line, "\x1e \t"), " \t\r\n")
-		if len(body) == 0 {
-			out = append(out, line...)
-			continue
+	prev, changed := 0, false
+	for n := 0; ; n++ {
+		var raw json.RawMessage
+		err := dec.Decode(&raw)
+		if err == io.EOF {
+			break
 		}
-		cleaned, rep := cfg.Guard.ProcessJSON(body)
-		prefix(&rep, "line["+strconv.Itoa(n)+"]")
+		if err != nil {
+			return nil, all, false
+		}
+		end := int(dec.InputOffset())
+		start := end - len(raw)
+		cleaned, rep := cfg.Guard.ProcessJSON(data[start:end])
+		prefix(&rep, "doc["+strconv.Itoa(n)+"]")
 		merge(&all, rep)
 		if rep.InvalidJSON {
 			return nil, all, false
 		}
-		if rep.Changed {
-			changed = true
-			i := bytes.Index(line, body)
-			out = append(append(append(out, line[:i]...), cleaned...), line[i+len(body):]...)
-			continue
-		}
-		out = append(out, line...)
+		out = append(append(out, data[prev:start]...), cleaned...)
+		prev = end
+		changed = changed || rep.Changed
 	}
 	if !changed || all.Rejected {
 		return data, all, true
 	}
-	return out, all, true
+	return append(out, data[prev:]...), all, true
 }
 
 func declaredJSON(r *http.Request) bool {

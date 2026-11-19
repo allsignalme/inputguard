@@ -114,6 +114,16 @@ func TestNDJSON(t *testing.T) {
 	if rec := do(t, h, "POST", "/bulk", "application/x-ndjson", "{\"a\":\"<b>\"\n", nil); rec.Code != 400 {
 		t.Fatalf("broken line: %d", rec.Code)
 	}
+	// A document spanning lines is one document (a streaming decoder reads it whole).
+	multi := "{\"file\":\n\"../../etc/passwd\"\n}\n{\"url\":\n\"javascript: alert(document.cookie)\"\n}\n"
+	if rec := do(t, h, "POST", "/bulk", "application/x-ndjson", multi, nil); rec.Code != 204 ||
+		strings.Contains(s.body, "passwd") || strings.Contains(s.body, "javascript") {
+		t.Fatalf("multi-line documents: %d %q", rec.Code, s.body)
+	}
+	seq := "\x1e{\"a\":\"x<script>\"}\n\x1e{\"b\":1}\n"
+	if rec := do(t, h, "POST", "/bulk", "application/json-seq", seq, nil); rec.Code != 204 || s.body != "\x1e{\"a\":\"x\"}\n\x1e{\"b\":1}\n" {
+		t.Fatalf("json-seq: %d %q", rec.Code, s.body)
+	}
 }
 
 // A query pair that does not parse does not stop the others from being inspected.

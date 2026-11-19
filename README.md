@@ -148,7 +148,9 @@ http.Handle("/api/", mw(api))
 A body is JSON when its Content-Type says so or when it starts with `{` or `[` (handlers decode JSON whatever the
 header says); other bodies, uploads included, pass untouched. JSON bodies are cleaned in place before the handler
 reads them. A rejected request gets `400 {"error":{"code":"input_rejected","message":…,"fields":[{"path":…,"rule":…}]}}`,
-a body that does not parse gets `400 {"error":{"code":"invalid_json",…}}`.
+a body that does not parse gets `400 {"error":{"code":"invalid_json",…}}`. NDJSON / JSON Lines bodies are checked
+line by line. Query pairs are split on `&` and `;` (for handlers behind `http.AllowQuerySemicolons`); only the pairs
+that change are rewritten.
 
 ## Other entry points
 
@@ -202,7 +204,8 @@ engine did not check.
 - This is a filter, not a substitute for output encoding, parameterized queries, or checking the address an
   outbound request actually connects to. `ssrf` does not resolve DNS names: a name that resolves to a private
   address passes; check at connection time as well.
-- `httpguard` inspects JSON bodies only (not forms or multipart).
+- `httpguard` inspects JSON bodies only (not forms or multipart). A body that is a bare JSON string is inspected
+  only when declared as JSON.
 
 ## License
 

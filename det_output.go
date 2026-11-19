@@ -328,7 +328,7 @@ func parseURLLoose(s string) looseURL {
 	if hasNonASCII(auth) {
 		// HTTP clients map the host with IDNA (UTS 46, close to NFKC with case folding): ①②⑦.0.0.1 and
 		// ⓛⓞⓒⓐⓛⓗⓞⓢⓣ reach the loopback.
-		auth = textnorm.NFKC.String(auth)
+		auth = textnorm.NFKC.String(strings.Map(dropIgnorable, auth))
 	}
 	auth = strings.NewReplacer("。", ".", "｡", ".", "．", ".").Replace(auth)
 	host := auth
@@ -341,6 +341,17 @@ func parseURLLoose(s string) looseURL {
 	}
 	u.host = strings.TrimRight(strings.ToLower(host), ".")
 	return u
+}
+
+// dropIgnorable removes the default-ignorable code points IDNA maps to nothing (variation selectors, the combining
+// grapheme joiner, format characters such as soft hyphen and zero-width joiners): 127\uFE00.0.0.1 is 127.0.0.1 to
+// an HTTP client.
+func dropIgnorable(r rune) rune {
+	if unicode.Is(unicode.Variation_Selector, r) || unicode.Is(unicode.Other_Default_Ignorable_Code_Point, r) ||
+		unicode.Is(unicode.Cf, r) {
+		return -1
+	}
+	return r
 }
 
 func hasNonASCII(s string) bool {

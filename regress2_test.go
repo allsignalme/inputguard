@@ -79,3 +79,18 @@ func TestRegress2_HomepageIsAURL(t *testing.T) {
 		t.Errorf("%v", r.Rules())
 	}
 }
+
+// Characters IDNA maps to nothing do not hide a host.
+func TestRegress2_SSRFIgnorableCharacters(t *testing.T) {
+	g := MustNew(WithRules(RuleSSRF))
+	for _, r := range []rune{0xFE00, 0xFE0F, 0x034F, 0x180B, 0x00AD, 0x200D} {
+		for _, u := range []string{
+			"http://127" + string(r) + ".0.0.1/",
+			"http://local" + string(r) + "host/",
+		} {
+			if rep := g.CheckString(u, CtxURL); !hasRule(rep, RuleSSRF) {
+				t.Errorf("%q: %v", u, rep.Rules())
+			}
+		}
+	}
+}
