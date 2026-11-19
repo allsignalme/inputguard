@@ -30,13 +30,20 @@ type Guard struct {
 
 	detectors []*activeDetector
 
-	// bodyFast: the body fast path (xssMaybeDirtyBody + the cheap structural checks) is a superset of every
-	// enabled rule, so a body that passes it is returned untouched without parsing.
+	// Fast path (fastpath.go): trigger bits per context, for any context, and for a raw body; detectors without
+	// fast bits are asked one by one (slow lists).
+	valueBits [ctxCount]fastBits
+	anyBits   fastBits
+	bodyBits  fastBits
+	slow      [ctxCount][]*activeDetector
+	slowAny   []*activeDetector
+	invalidOn bool
+	// bodyFast: the body fast path covers every enabled rule, so a body it clears is returned without parsing.
 	bodyFast bool
 	// structOnFast: limits must be checked even on bodies the fast path would accept (OnExceed = ActionReject).
 	structOnFast bool
 	// dupKeys / protoKeys / mongoKeys: key checks to run while scanning.
-	dupKeys, protoKeys, mongoOperator, mongoInvalid bool
+	dupKeys, protoKeys, mongoOperator, mongoInvalid, nosqlKeys bool
 }
 
 type compiledFieldCtx struct {
@@ -193,6 +200,7 @@ func New(opts ...Option) (*Guard, error) {
 	g.protoKeys = g.ruleOn(RuleProtoPollution)
 	g.mongoOperator = g.ruleOn(RuleKeyOperator)
 	g.mongoInvalid = g.ruleOn(RuleKeyInvalid)
+	g.nosqlKeys = g.ruleOn(RuleNoSQLOperator)
 	switch g.limits.OnExceed {
 	case ActionClean, ActionReject, ActionReport:
 		g.limitAct = g.limits.OnExceed
@@ -200,7 +208,7 @@ func New(opts ...Option) (*Guard, error) {
 		g.limitAct = def
 	}
 	g.structOnFast = g.limitAct == ActionReject
-	g.bodyFast = g.computeBodyFast()
+	g.buildFastPath()
 	return g, nil
 }
 
@@ -245,22 +253,40 @@ func defaultClassifier() Classifier {
 	return defaultClassifierFn
 }
 
-// computeBodyFast: the raw-body fast path covers XSS, the template rules' anchors are not covered (they run on
-// any "(" "{" "$"), so the fast path is only valid when every enabled rule is covered by it.
-func (g *Guard) computeBodyFast() bool {
-	for _, d := range g.detectors {
-		if d.custom != nil {
-			if d.custom.MayMatch == nil {
-				return false
+// buildFastPath combines the trigger bits of the enabled groups per context.
+func (g *Guard) buildFastPath() {
+	for _, ad := range g.detectors {
+		var bits fastBits
+		var ctxs ctxMask
+		if ad.custom != nil {
+			ctxs = ad.contexts
+		} else {
+			bits, ctxs = ad.builtin.fast, ad.builtin.contexts
+		}
+		for c := Context(0); c < ctxCount; c++ {
+			if !ctxs.has(c) {
+				continue
 			}
-			continue
+			if bits != 0 {
+				g.valueBits[c] |= bits
+			} else {
+				g.slow[c] = append(g.slow[c], ad)
+			}
 		}
-		if d.builtin.bodyMayMatch == nil {
-			return false
+		if bits != 0 {
+			g.anyBits |= bits
+		} else {
+			g.slowAny = append(g.slowAny, ad)
 		}
 	}
-	if g.dupKeys || g.mongoInvalid {
-		return false // need key positions; the scanner handles them in one pass
+	g.invalidOn = g.ruleOn(RuleInvalidUTF8)
+	g.bodyBits = g.anyBits
+	if g.protoKeys {
+		g.bodyBits |= fbProto
 	}
-	return true
+	if g.mongoOperator || g.nosqlKeys {
+		g.bodyBits |= fbDollar
+	}
+	// Duplicate keys and Mongo key characters need the parser.
+	g.bodyFast = len(g.slowAny) == 0 && !g.dupKeys && !g.mongoInvalid
 }

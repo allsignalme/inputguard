@@ -12,13 +12,12 @@ import (
 
 func init() {
 	registerDetector(&builtinDetector{
-		name:         "unicode",
-		rules:        []RuleID{RuleControlChar, RuleBidi, RuleInvisible, RuleInvalidUTF8},
-		contexts:     allInspected,
-		mayMatch:     func(g *Guard, raw string) bool { return firstUnicodeIssue(g, raw).kind != uniNone },
-		bodyMayMatch: unicodeBodyMayMatch,
-		detect:       detectUnicode,
-		clean:        cleanChars,
+		name:     "unicode",
+		rules:    []RuleID{RuleControlChar, RuleBidi, RuleInvisible, RuleInvalidUTF8},
+		contexts: allInspected,
+		fast:     fbUnicode,
+		detect:   detectUnicode,
+		clean:    cleanChars,
 	})
 }
 
@@ -31,11 +30,6 @@ const (
 	uniInvisible
 	uniInvalid
 )
-
-type uniIssue struct {
-	kind uniKind
-	at   int
-}
 
 // classifyRune: which character-level rule a rune falls under. \t \n \r are text; ZWJ (U+200D) builds emoji.
 func classifyRune(r rune) uniKind {
@@ -54,99 +48,64 @@ func classifyRune(r rune) uniKind {
 	return uniNone
 }
 
-// classifyAt classifies the character at s[i] (lead byte c ≥ 0x80) from its bytes, without decoding. Returns the
-// kind and the sequence length to skip (1 for a byte that cannot start a valid sequence).
+// classifyAt classifies the character at s[i] (lead byte c >= 0x80) from its bytes, without decoding. Returns the
+// kind and the number of bytes to skip: the sequence length, or only its well-formed prefix when it is truncated
+// or invalid, so that an ASCII byte after a broken sequence is never skipped (validity is checked separately).
 func classifyAt[T byteSeq](s T, i int) (uniKind, int) {
 	c := s[i]
-	n := len(s)
+	want := 0
 	switch {
-	case c < 0xC2:
-		return uniNone, 1 // continuation byte or invalid lead (validity is checked separately)
-	case c < 0xE0:
-		if c == 0xC2 && i+1 < n && (s[i+1] <= 0x9F || s[i+1] == 0xAD) {
-			if s[i+1] == 0xAD {
-				return uniInvisible, 2
-			}
-			if s[i+1] >= 0x80 {
-				return uniControl, 2
-			}
-		}
-		return uniNone, 2
-	case c < 0xF0:
-		if i+2 < n {
-			b1, b2 := s[i+1], s[i+2]
-			switch c {
-			case 0xE1:
-				if b1 == 0xA0 && b2 == 0x8E {
-					return uniInvisible, 3 // U+180E
-				}
-			case 0xE2:
-				switch {
-				case b1 == 0x80 && (b2 >= 0xAA && b2 <= 0xAE):
-					return uniBidi, 3 // U+202A–202E
-				case b1 == 0x80 && (b2 == 0x8B || b2 == 0x8C || b2 == 0x8E || b2 == 0x8F):
-					return uniInvisible, 3 // U+200B, 200C, 200E, 200F
-				case b1 == 0x81 && (b2 >= 0xA6 && b2 <= 0xA9):
-					return uniBidi, 3 // U+2066–2069
-				case b1 == 0x81 && (b2 >= 0xA0 && b2 <= 0xA4):
-					return uniInvisible, 3 // U+2060–2064
-				}
-			case 0xEF:
-				if b1 == 0xBB && b2 == 0xBF {
-					return uniInvisible, 3 // U+FEFF
-				}
+	case c >= 0xC2 && c < 0xE0:
+		want = 2
+	case c >= 0xE0 && c < 0xF0:
+		want = 3
+	case c >= 0xF0 && c < 0xF5:
+		want = 4
+	default:
+		return uniNone, 1 // continuation byte or byte that never starts a sequence
+	}
+	size := 1
+	for size < want && i+size < len(s) && s[i+size]&0xC0 == 0x80 {
+		size++
+	}
+	if size < want {
+		return uniNone, size
+	}
+	switch want {
+	case 2:
+		if c == 0xC2 {
+			switch b := s[i+1]; {
+			case b == 0xAD:
+				return uniInvisible, 2 // U+00AD soft hyphen
+			case b <= 0x9F:
+				return uniControl, 2 // C1 controls
 			}
 		}
-		return uniNone, 3
-	}
-	return uniNone, 4
-}
-
-// firstUnicodeIssue returns the first character an ENABLED rule flags.
-func firstUnicodeIssue(g *Guard, s string) uniIssue {
-	ctrl, bidi, invis, inval := g.ruleOn(RuleControlChar), g.ruleOn(RuleBidi), g.ruleOn(RuleInvisible), g.ruleOn(RuleInvalidUTF8)
-	var bad = -1
-	if inval && !utf8.ValidString(s) {
-		bad = firstInvalid(s)
-	}
-	for i := 0; i < len(s); {
-		if bad >= 0 && i >= bad {
-			return uniIssue{uniInvalid, bad}
-		}
-		c := s[i]
-		if c >= 0x20 && c < 0x7f {
-			i++
-			continue
-		}
-		if c < 0x80 {
-			if ctrl && c != '\t' && c != '\n' && c != '\r' {
-				return uniIssue{uniControl, i}
+	case 3:
+		b1, b2 := s[i+1], s[i+2]
+		switch c {
+		case 0xE1:
+			if b1 == 0xA0 && b2 == 0x8E {
+				return uniInvisible, 3 // U+180E
 			}
-			i++
-			continue
+		case 0xE2:
+			switch {
+			case b1 == 0x80 && (b2 >= 0xAA && b2 <= 0xAE):
+				return uniBidi, 3 // U+202A–202E
+			case b1 == 0x80 && (b2 == 0x8B || b2 == 0x8C || b2 == 0x8E || b2 == 0x8F):
+				return uniInvisible, 3 // U+200B, 200C, 200E, 200F
+			case b1 == 0x81 && (b2 >= 0xA6 && b2 <= 0xA9):
+				return uniBidi, 3 // U+2066–2069
+			case b1 == 0x81 && (b2 >= 0xA0 && b2 <= 0xA4):
+				return uniInvisible, 3 // U+2060–2064
+			}
+		case 0xEF:
+			if b1 == 0xBB && b2 == 0xBF {
+				return uniInvisible, 3 // U+FEFF
+			}
 		}
-		k, size := classifyAt(s, i)
-		switch {
-		case k == uniControl && ctrl, k == uniBidi && bidi, k == uniInvisible && invis:
-			return uniIssue{k, i}
-		}
-		i += size
 	}
-	if bad >= 0 {
-		return uniIssue{uniInvalid, bad}
-	}
-	return uniIssue{}
-}
-
-func firstInvalid(s string) int {
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		if r == utf8.RuneError && size == 1 {
-			return i
-		}
-		i += size
-	}
-	return -1
+	return uniNone, size
 }
 
 func detectUnicode(_ *Guard, in *input, emit func(RuleID, int)) {
@@ -212,44 +171,4 @@ func stripUnicodeIssues(s string, drop [5]bool) string {
 		return s
 	}
 	return string(out)
-}
-
-// unicodeBodyMayMatch: a raw JSON body carries these characters raw or as \uXXXX / \b / \f escapes.
-func unicodeBodyMayMatch(g *Guard, b []byte) bool {
-	if g.ruleOn(RuleInvalidUTF8) && !utf8.Valid(b) {
-		return true
-	}
-	for i := 0; i < len(b); {
-		c := b[i]
-		switch {
-		case c >= 0x20 && c < 0x7f && c != '\\':
-			i++
-		case c == '\\':
-			if i+1 < len(b) {
-				switch b[i+1] {
-				case 'u':
-					if v, ok := hex4(b, i+2); ok && classifyRune(rune(v)) != uniNone {
-						return true
-					}
-					i += 6
-					continue
-				case 'b', 'f':
-					return true
-				}
-			}
-			i += 2
-		case c < 0x80:
-			if c != '\t' && c != '\n' && c != '\r' {
-				return true
-			}
-			i++
-		default:
-			k, size := classifyAt(b, i)
-			if k != uniNone {
-				return true
-			}
-			i += size
-		}
-	}
-	return false
 }

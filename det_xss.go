@@ -8,14 +8,13 @@ var allInspected = maskOf(CtxText, CtxURL, CtxIdentifier, CtxPath, CtxHeader, Ct
 
 func init() {
 	registerDetector(&builtinDetector{
-		name:         "xss",
-		rules:        []RuleID{RuleTagDangerous, RuleTagGeneric, RuleEventHandler, RuleScheme},
-		contexts:     allInspected,
-		mayMatch:     func(_ *Guard, raw string) bool { return maybeDirtyString(raw) },
-		bodyMayMatch: func(_ *Guard, body []byte) bool { return xssMaybeDirtyBody(body) },
-		needNorm:     true,
-		detect:       detectXSS,
-		clean:        cleanCut,
+		name:     "xss",
+		rules:    []RuleID{RuleTagDangerous, RuleTagGeneric, RuleEventHandler, RuleScheme},
+		contexts: allInspected,
+		fast:     fbXSS,
+		needNorm: true,
+		detect:   detectXSS,
+		clean:    cleanCut,
 	})
 	registerDetector(&builtinDetector{
 		name:     "template",

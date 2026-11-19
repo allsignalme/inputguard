@@ -107,7 +107,7 @@ var ruleTable = []RuleInfo{
 	{RuleSQLInjection, CatInjection, SeverityHigh, ProfileStrict, "SQL injection"},
 	{RuleNoSQLOperator, CatInjection, SeverityHigh, ProfileStrict, "NoSQL query operator"},
 	{RulePathTraversal, CatInjection, SeverityHigh, ProfileBalanced, "path traversal"},
-	{RuleHeaderCRLF, CatInjection, SeverityHigh, ProfileBalanced, "line break in a header value"},
+	{RuleHeaderCRLF, CatInjection, SeverityHigh, ProfileStrict, "line break in a header value"},
 	{RuleCommand, CatInjection, SeverityHigh, ProfileStrict, "shell command injection"},
 
 	{RuleControlChar, CatUnicode, SeverityMedium, ProfileBalanced, "control character"},

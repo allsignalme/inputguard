@@ -2,116 +2,7 @@ package inputguard
 
 import "github.com/allsignalme/inputguard/internal/norm"
 
-// MaybeDirty lọc nhanh body JSON cho chế độ Clean: một lượt qua byte thô, không cấp phát. false ⇒ chắc chắn
-// CleanJSON không đổi gì ⇒ cho body đi nguyên vẹn (≈ mọi request thật).
-//
-// Là SIÊU TẬP của Detect với mọi dạng mã hoá trình duyệt hiểu (%XX, thực thể, escape JSON/JS, tab/xuống dòng
-// trong từ, ký tự vô hình, full-width). Báo dư chỉ tốn đường chậm, không làm sai.
-// Không phủ: dạng tương thích Unicode lạ (chữ toán học, chữ mũ…) — NFKC đưa về ASCII nhưng trình duyệt
-// không coi là thẻ / thuộc tính / scheme, nên không phải mối nguy.
-func xssMaybeDirtyBody(body []byte) bool { return scan(body, true) }
-
-// maybeDirtyString: như MaybeDirty cho một chuỗi ĐÃ giải mã JSON — bộ duyệt dùng để bỏ qua chuỗi sạch.
-func maybeDirtyString(s string) bool { return scan(s, false) }
-
 type byteSeq interface{ ~string | ~[]byte }
-
-// scanInteresting: byte có thể mở đầu một dấu hiệu. Byte khác (phần lớn body thật) bỏ qua bằng một lần tra bảng.
-var scanInteresting = func() (t [256]bool) {
-	for _, c := range []byte("<\\%&oOjJvVlLmMdD") {
-		t[c] = true
-	}
-	for c := 0; c < 0x20; c++ {
-		t[c] = true
-	}
-	t[0x7f], t[0xEF], t[0xE2], t[0xE1], t[0xC2] = true, true, true, true, true
-	return t
-}()
-
-// scan: jsonBody=true ⇒ b là JSON thô (hiểu escape JSON).
-func scan[T byteSeq](b T, jsonBody bool) bool {
-	n := len(b)
-	for i := 0; i < n; i++ {
-		c := b[i]
-		if !scanInteresting[c] {
-			continue
-		}
-		switch c {
-		case '<':
-			return true
-		case '\\':
-			if !jsonBody {
-				if i+1 < n && (b[i+1]|0x20 == 'u' || b[i+1]|0x20 == 'x') {
-					return true // \u003c, \x3c — Normalize giải thành `<`
-				}
-				continue
-			}
-			skip, dirty := jsonEscape(b, i)
-			if dirty {
-				return true
-			}
-			i += skip
-		case '%':
-			if suspiciousPercentAt(b, i+1, 0) {
-				return true
-			}
-		case '&':
-			if entityAt(b, i+1) {
-				return true
-			}
-		case 'o', 'O':
-			if handlerAt(b, i, jsonBody) {
-				return true
-			}
-		case 'j', 'J':
-			if wordAt(b, i, "javascript") {
-				return true
-			}
-		case 'v', 'V':
-			if wordAt(b, i, "vbscript") {
-				return true
-			}
-		case 'l', 'L':
-			if wordAt(b, i, "livescript") {
-				return true
-			}
-		case 'm', 'M':
-			if wordAt(b, i, "mocha") && colonNext(b, i+5) {
-				return true
-			}
-		case 'd', 'D':
-			if wordAt(b, i, "data") && dataTypeNear(b, i+4) {
-				return true
-			}
-		case '\t', '\n', '\r':
-			if i > 0 && i+1 < n && isLetter(b[i-1]) && isLetter(b[i+1]) {
-				return true // tab/xuống dòng GIỮA từ: `java\tscript:`
-			}
-		case 0xEF: // U+FF00–U+FFFF: full-width `＜ ＂ ｊ…`, U+FE64 `﹤`, BOM
-			if i+2 < n && (b[i+1] == 0xBC || b[i+1] == 0xBD || (b[i+1] == 0xB9 && b[i+2] == 0xA4) ||
-				(b[i+1] == 0xBB && b[i+2] == 0xBF)) {
-				return true
-			}
-		case 0xE2: // U+200B/C/E/F, U+202A–E, U+2060–4, U+2066–9 (ZWJ U+200D thì không — ghép emoji)
-			if i+2 < n && isInvisibleE2(b[i+1], b[i+2]) {
-				return true
-			}
-		case 0xE1: // U+180E
-			if i+2 < n && b[i+1] == 0xA0 && b[i+2] == 0x8E {
-				return true
-			}
-		case 0xC2: // C1 controls U+0080–009F, soft hyphen U+00AD
-			if i+1 < n && (b[i+1] <= 0x9F || b[i+1] == 0xAD) {
-				return true
-			}
-		default:
-			if c < 0x20 || c == 0x7f {
-				return true
-			}
-		}
-	}
-	return false
-}
 
 // jsonEscape xử lý escape JSON tại b[i] == '\\' trong body thô. Trả số byte cần bỏ qua thêm và có đáng ngờ không.
 // Các escape vô hại phổ biến (`\"`, `\/`, `\u0026` của Ruby/Go cho `&` trong URL, `\u003e`) đi tiếp fast path.
@@ -124,7 +15,7 @@ func jsonEscape[T byteSeq](b T, i int) (int, bool) {
 	case '"', '/':
 		return 1, false
 	case '\\':
-		if i+2 < n && (b[i+2]|0x20 == 'u' || b[i+2]|0x20 == 'x') {
+		if jsEscapeAt(b, i+2) {
 			return 0, true // chuỗi chứa `\u003c` / `\x3c` dạng chữ
 		}
 		return 1, false

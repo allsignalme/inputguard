@@ -3,7 +3,6 @@ package inputguard
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/allsignalme/inputguard/internal/legacy"
 )
@@ -168,12 +168,21 @@ func legacyHasControl(s string) bool {
 	return false
 }
 
+// TestParity_MaybeDirty: the fast path never skips a body the old engine would clean or flag, and skips every body
+// the old fast path skipped. (It skips more: a backslash before "u" or "x" only counts when an escape can follow,
+// so Windows paths such as C:\Users stay on the fast path.)
 func TestParity_MaybeDirty(t *testing.T) {
 	g := parityGuard(t, false)
 	for _, s := range corpusPayloads(t) {
 		for _, body := range jsonBodies(s) {
-			if got, want := g.MaybeDirty(body), legacy.MaybeDirty(body); got != want {
-				t.Errorf("%s: MaybeDirty=%v, legacy %v", body, got, want)
+			got := g.MaybeDirty(body)
+			if got && !legacy.MaybeDirty(body) {
+				t.Errorf("%s: MaybeDirty=true, legacy false", body)
+			}
+			if !got {
+				if _, r, _ := legacy.CleanJSON(body, legacy.ModeClean, nil); r.Changed || len(r.Findings) > 0 {
+					t.Errorf("%s: skipped, but the old engine flags %v", body, r.Findings)
+				}
 			}
 		}
 	}
@@ -333,6 +342,12 @@ func FuzzParity_CleanString(f *testing.F) {
 	}
 	g := parityGuard(f, false)
 	f.Fuzz(func(t *testing.T, s string, c uint8) {
+		if !utf8.ValidString(s) || strings.ContainsFunc(s, func(r rune) bool { return r >= 0x80 && r <= 0x9f }) {
+			// Two deliberate differences. The old engine replaced invalid UTF-8 only as a side effect of strings.Map
+			// when it stripped a control character (here: RuleInvalidUTF8, off in the parity configuration), and
+			// RuleControlChar now covers C1 controls (U+0080–U+009F: NEL, CSI…) as well as C0 and DEL.
+			return
+		}
 		ctx := []Context{CtxText, CtxURL, CtxIdentifier}[int(c)%3]
 		want, _, wantChanged := legacy.CleanString(toLegacyCtx(ctx), s)
 		got, rep := g.ProcessString(s, ctx)
@@ -341,5 +356,3 @@ func FuzzParity_CleanString(f *testing.F) {
 		}
 	})
 }
-
-var _ = fmt.Sprint

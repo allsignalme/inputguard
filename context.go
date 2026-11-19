@@ -219,3 +219,6 @@ func lowerASCII(s string) string {
 
 // isURL: the value is a URL (link or redirect target).
 func (c Context) isURL() bool { return c == CtxURL || c == CtxRedirect }
+
+// ctxCount is the number of contexts (for per-context tables).
+const ctxCount = CtxSkip + 1

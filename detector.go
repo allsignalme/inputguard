@@ -1,6 +1,8 @@
 package inputguard
 
 import (
+	"unicode/utf8"
+
 	"github.com/allsignalme/inputguard/internal/norm"
 )
 
@@ -25,12 +27,12 @@ type builtinDetector struct {
 	rules []RuleID
 	// contexts the group runs on.
 	contexts ctxMask
-	// mayMatch is a cheap check on the decoded JSON string (not yet normalised). It must return true for every
-	// value detect would flag. nil = always run.
+	// fast: the trigger bits of the shared fast path (fastpath.go) that cover this group, in values and bodies.
+	// Zero: the group has its own mayMatch and the body fast path cannot skip it.
+	fast fastBits
+	// mayMatch is a cheap check on the decoded JSON string (not yet normalised), for groups without fast bits. It
+	// must return true for every value detect would flag. nil = always run.
 	mayMatch func(g *Guard, raw string) bool
-	// bodyMayMatch is the same check on a raw JSON body (escapes not decoded). nil = the body fast path cannot
-	// skip this group.
-	bodyMayMatch func(g *Guard, body []byte) bool
 	// needNorm: detect reads in.Decoded / in.Folded (normalisation is computed lazily, once per value).
 	needNorm bool
 	// detect reports matches through emit (rule, offset in Decoded; -1 when not positional).
@@ -102,7 +104,11 @@ func (g *Guard) detect(in *input, hits []hit) []hit {
 		if !d.contexts.has(in.ctx) {
 			continue
 		}
-		if d.mayMatch != nil && !d.mayMatch(g, in.raw) {
+		if d.fast != 0 {
+			if !g.fastValue(in.raw, d.fast) {
+				continue
+			}
+		} else if d.mayMatch != nil && !d.mayMatch(g, in.raw) {
 			continue
 		}
 		clean := d.clean
@@ -132,21 +138,24 @@ func appendHit(hits []hit, h hit) []hit {
 
 // maybeDirtyValue is the per-value fast path: false ⇒ no enabled rule can match this value in this context.
 func (g *Guard) maybeDirtyValue(raw string, ctx Context) bool {
-	for _, ad := range g.detectors {
-		if ad.custom != nil {
-			if !ad.contexts.has(ctx) {
-				continue
-			}
-			if ad.custom.MayMatch == nil || ad.custom.MayMatch(raw) {
-				return true
-			}
-			continue
+	if g.fastValue(raw, g.valueBits[ctx]) {
+		return true
+	}
+	for _, ad := range g.slow[ctx] {
+		if ad.mayMatch(g, raw) {
+			return true
 		}
-		d := ad.builtin
-		if !d.contexts.has(ctx) {
-			continue
-		}
-		if d.mayMatch == nil || d.mayMatch(g, raw) {
+	}
+	return false
+}
+
+// maybeDirtyAny: could an enabled rule match s in some context? Cheaper than classifying the value first.
+func (g *Guard) maybeDirtyAny(s string) bool {
+	if g.fastValue(s, g.anyBits) {
+		return true
+	}
+	for _, ad := range g.slowAny {
+		if ad.mayMatch(g, s) {
 			return true
 		}
 	}
@@ -155,13 +164,13 @@ func (g *Guard) maybeDirtyValue(raw string, ctx Context) bool {
 
 // maybeDirtyBody is the raw-body fast path. Only valid when g.bodyFast.
 func (g *Guard) maybeDirtyBody(body []byte) bool {
-	for _, ad := range g.detectors {
-		if ad.custom != nil {
-			return true
-		}
-		if ad.builtin.bodyMayMatch(g, body) {
-			return true
-		}
+	return scanFast(body, true, g.bodyBits) || (g.bodyBits&fbUnicode != 0 && g.invalidOn && !utf8.Valid(body))
+}
+
+// mayMatch of a detector without fast bits.
+func (ad *activeDetector) mayMatch(g *Guard, raw string) bool {
+	if ad.custom != nil {
+		return ad.custom.MayMatch == nil || ad.custom.MayMatch(raw)
 	}
-	return false
+	return ad.builtin.mayMatch == nil || ad.builtin.mayMatch(g, raw)
 }

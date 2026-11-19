@@ -94,15 +94,25 @@ type LeafChange struct {
 	Old, New string
 }
 
-// Error describes a rejected report for an API client: rules and paths only, never values.
-func (r Report) Error() string {
+// Err returns nil unless the report is rejected. The error lists the rejected rules and paths, never values, so
+// its message can be returned to an API client. errors.Is(err, ErrRejected) holds.
+func (r Report) Err() error {
 	if !r.Rejected {
-		return ""
+		return nil
 	}
+	return &RejectedError{Report: r}
+}
+
+// RejectedError is the error returned by Report.Err.
+type RejectedError struct{ Report Report }
+
+func (e *RejectedError) Unwrap() error { return ErrRejected }
+
+func (e *RejectedError) Error() string {
 	var b strings.Builder
 	b.WriteString("input rejected")
 	first := true
-	for _, f := range r.Findings {
+	for _, f := range e.Report.Findings {
 		if f.Action != ActionReject {
 			continue
 		}
@@ -121,6 +131,10 @@ func (r Report) Error() string {
 		} else {
 			b.WriteString(string(f.Rule))
 		}
+	}
+	if first && e.Report.LimitExceeded {
+		b.WriteString(": ")
+		b.WriteString(ruleIndex[RuleTooComplex].Summary)
 	}
 	return b.String()
 }
