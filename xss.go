@@ -9,21 +9,21 @@ import (
 	"strings"
 )
 
-// Thẻ nguy hiểm ngay cả khi chưa đóng `>` (payload hay bị cắt cụt: `<iMg src=N onerror=…`).
-// Sau tên thẻ phải là khoảng trắng, `/`, `>` hoặc hết chuỗi — đúng cách trình duyệt tách tên thẻ.
+// Tags that are dangerous even without a closing `>` (payloads are often truncated: `<iMg src=N onerror=…`). The
+// name must be followed by a space, `/`, `>` or the end, which is how browsers delimit a tag name.
 const dangerousTags = `script|iframe|frame|frameset|object|embed|applet|svg|math|img|image|style|link|meta|base|` +
 	`body|html|head|xml|isindex|portal|noscript|template|xmp|plaintext|noembed|noframes|textarea|title|video|audio|` +
 	`source|input|button|form|select|details|dialog|marquee|bgsound|layer|ilayer|keygen`
 
-// Thẻ HTML thường — chỉ tính khi đóng đủ `>`; tên lạ như `<M>` (cỡ áo) hay `<3` không bị tính.
+// Ordinary HTML tags: they count only when closed by `>`; unknown names such as `<M>` (a size) or `<3` do not.
 const knownTags = `a|abbr|acronym|address|area|article|aside|b|bdi|bdo|big|blink|blockquote|br|canvas|caption|` +
 	`center|cite|code|col|colgroup|data|datalist|dd|del|dfn|dir|div|dl|dt|em|fieldset|figcaption|figure|font|` +
 	`footer|h1|h2|h3|h4|h5|h6|header|hgroup|hr|i|ins|kbd|label|legend|li|listing|main|map|mark|menu|menuitem|meter|nav|nobr|` +
 	`ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|search|section|slot|small|span|` +
 	`strike|strong|sub|summary|sup|table|tbody|td|tfoot|th|thead|time|tr|track|tt|u|ul|var|wbr`
 
-// Thuộc tính sự kiện DOM — dùng cho dạng KHÔNG có dấu nháy đứng trước (` onerror=`), để "the onion=good",
-// "online=1" không bị bắt. Dạng có nháy đứng trước (`" onxyz=`) thì bắt mọi tên on[a-z]{3,}.
+// DOM event attributes, for the form WITHOUT a quote before it (` onerror=`), so that "the onion=good" and
+// "online=1" are not flagged. After a quote (`" onxyz=`) every on[a-z]{3,} name counts.
 const domEvents = `abort|afterprint|afterscriptexecute|animationcancel|animationend|animationiteration|animationstart|` +
 	`auxclick|beforecopy|beforecut|beforeinput|beforeprint|beforescriptexecute|beforetoggle|beforeunload|begin|blur|` +
 	`bounce|cancel|canplay|canplaythrough|change|click|close|contextmenu|copy|cuechange|cut|dblclick|drag|dragend|` +
@@ -37,11 +37,11 @@ const domEvents = `abort|afterprint|afterscriptexecute|animationcancel|animation
 	`transitioncancel|transitionend|transitionrun|transitionstart|unhandledrejection|unload|volumechange|waiting|` +
 	`webkitanimationend|webkitanimationiteration|webkitanimationstart|webkittransitionend|wheel`
 
-// urlStripped: ký tự trình duyệt BỎ khỏi URL trước khi tách scheme (WHATWG URL: tab, LF, CR). Dấu cách thì
-// không — "java script:" không phải scheme hợp lệ nên không cần (và không nên) bắt.
+// urlStripped: characters browsers REMOVE from a URL before reading the scheme (WHATWG URL: tab, LF, CR). Not
+// spaces: "java script:" is no scheme, so it need not (and should not) be flagged.
 const urlStripped = `[\t\n\r]*`
 
-// spaced chèn urlStripped giữa các chữ: `java\tscript:` vẫn chạy trong href.
+// spaced allows urlStripped between the letters: `java\tscript:` still runs in an href.
 func spaced(word string) string {
 	parts := make([]string, 0, len(word))
 	for _, c := range word {
@@ -57,8 +57,8 @@ var (
 		`application/(?:x-)?javascript|application/xhtml|image/svg\+xml)`
 )
 
-// mayHaveScheme: luật scheme cần `:` và một trong các từ javascript / vbscript / livescript / mocha / data —
-// liền, hoặc bị tab / xuống dòng chen giữa (khi đó để regex quyết).
+// mayHaveScheme: the scheme rule needs `:` and one of javascript / vbscript / livescript / mocha / data, written
+// whole or split by tabs / line breaks (the regexp then decides).
 func mayHaveScheme(s string) bool {
 	if strings.IndexByte(s, ':') < 0 {
 		return false
@@ -69,12 +69,12 @@ func mayHaveScheme(s string) bool {
 
 var domEventSet = wordSet(domEvents)
 
-// scanHandlers trả vị trí sớm nhất của luật event_handler (-1 = không có), tương đương hai regex:
+// scanHandlers returns the earliest offset of the event_handler rule (-1 = none), equivalent to two regexps:
 //
-//	["'`][\s/]*on[a-z]{3,}\s*=          (vị trí dấu nháy — thoát thuộc tính)
-//	(?:^|[\s/;])(on(?:domEvents)\s*=)   (vị trí `on` — thuộc tính sự kiện không có nháy)
+//	["'`][\s/]*on[a-z]{3,}\s*=          (offset of the quote: attribute breakout)
+//	(?:^|[\s/;])(on(?:domEvents)\s*=)   (offset of `on`: an unquoted event attribute)
 //
-// (kiểm tương đương bằng FuzzScanHandlers_MatchesReferenceRegex). f đã hạ chữ thường ASCII.
+// f is ASCII-lowercased.
 func scanHandlers(f string) int {
 	best := -1
 	for p := 0; p+1 < len(f); p++ {
@@ -84,7 +84,7 @@ func scanHandlers(f string) int {
 		}
 		p += next
 		if best >= 0 && p > best {
-			break // dấu nháy của luật có nháy luôn đứng TRƯỚC `on` ⇒ không thể sớm hơn best nữa
+			break // the quote of the quoted form always comes BEFORE `on`: nothing earlier than best is left
 		}
 		q := p + 2
 		for q < len(f) && isLowerASCII(f[q]) {
@@ -141,13 +141,14 @@ func wordSet(alternation string) map[string]bool {
 	return m
 }
 
-// scanTags trả vị trí `<` sớm nhất của thẻ nguy hiểm và của thẻ thường (-1 = không có), tương đương hai regex:
+// scanTags returns the earliest `<` of a dangerous tag and of an ordinary tag (-1 = none), equivalent to two
+// regexps:
 //
 //	tag_dangerous: </?(?:dangerousTags)(?:[\s/>]|$)
 //	tag_generic:   </?(?:knownTags)(?:[\s/][^<>]*)?>  |  <[a-z][a-z0-9:-]*[\s/]+[a-z_:][-a-z0-9_:.]*\s*=
 //	               |  <!--  |  <![cdata[  |  <!doctype  |  <?[a-z]
 //
-// (kiểm tương đương bằng FuzzScanTags_MatchesReferenceRegex). f đã hạ chữ thường ASCII.
+// f is ASCII-lowercased.
 func scanTags(f string) (dangerous, generic int) {
 	dangerous, generic = -1, -1
 	n := len(f)
@@ -187,7 +188,7 @@ func scanTags(f string) (dangerous, generic int) {
 	return dangerous, generic
 }
 
-// closesTag: sau tên thẻ là `>`, hoặc [\s/] rồi các ký tự không phải `<` `>` tới `>`.
+// closesTag: the tag name is followed by `>`, or by [\s/] and then characters other than `<` `>` up to `>`.
 func closesTag(f string, k int) bool {
 	if k >= len(f) {
 		return false
@@ -209,7 +210,7 @@ func closesTag(f string, k int) bool {
 	return false
 }
 
-// attrAssignFollows: sau tên thẻ là [\s/]+, tên thuộc tính [a-z_:][-a-z0-9_:.]*, \s*, rồi `=`.
+// attrAssignFollows: the tag name is followed by [\s/]+, an attribute name [a-z_:][-a-z0-9_:.]*, \s*, then `=`.
 func attrAssignFollows(f string, k int) bool {
 	n := len(f)
 	start := k
@@ -229,7 +230,7 @@ func attrAssignFollows(f string, k int) bool {
 
 func isLowerASCII(c byte) bool { return 'a' <= c && c <= 'z' }
 
-// isRESpace: đúng lớp \s của RE2 (Go regexp): [\t\n\f\r ].
+// isRESpace: exactly RE2's \s class (Go regexp): [\t\n\f\r ].
 func isRESpace(c byte) bool {
 	return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'
 }

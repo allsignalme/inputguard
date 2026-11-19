@@ -61,31 +61,51 @@ func detectXSS(g *Guard, in *input, emit func(RuleID, int)) {
 
 func detectTemplate(_ *Guard, in *input, emit func(RuleID, int)) {
 	f := in.folded()
-	if idx := matchIndex(templateRe, f); idx >= 0 {
-		emit(RuleTemplate, idx)
+	if strings.Contains(f, "{{") || strings.Contains(f, "{%") || strings.Contains(f, "${") || strings.Contains(f, "<%") {
+		if idx := matchIndex(templateRe, f); idx >= 0 {
+			emit(RuleTemplate, idx)
+		}
 	}
-	if idx := matchIndex(jsCallRe, f); idx >= 0 {
-		emit(RuleJSCall, idx)
+	paren := strings.IndexByte(f, '(') >= 0
+	if jsCallGate(f, paren) {
+		if idx := matchIndex(jsCallRe, f); idx >= 0 {
+			emit(RuleJSCall, idx)
+		}
 	}
-	if strings.IndexByte(f, '(') >= 0 {
+	if paren && strings.ContainsAny(f, "\"'`") {
 		if idx := matchIndex(jsBreakoutRe, f); idx >= 0 {
 			emit(RuleJSBreakout, idx)
 		}
 	}
 }
 
-// mayHaveTemplateOrJS: the template / JS rules need one of { $ < ( . after decoding; any encoding marker or
-// non-ASCII byte (full-width forms) may decode to one.
-func mayHaveTemplateOrJS(raw string) bool {
-	for i := 0; i < len(raw); i++ {
-		switch c := raw[i]; c {
-		case '{', '$', '<', '(', '.', '%', '&', '\\':
-			return true
-		default:
-			if c >= 0x80 {
+// jsCallWords: names one of the jsCallRe alternatives needs.
+var (
+	jsCallNames = []string{
+		"eval", "atob", "btoa", "settimeout", "setinterval", "fromcharcode", "unescape", "decodeuricomponent",
+		"execscript", "import",
+	}
+	jsPropNames = []string{"function", "html", "document", "window", "globalthis"}
+)
+
+func jsCallGate(f string, paren bool) bool {
+	if paren {
+		for _, w := range jsCallNames {
+			if strings.Contains(f, w) {
 				return true
 			}
 		}
 	}
+	for _, w := range jsPropNames {
+		if strings.Contains(f, w) {
+			return true
+		}
+	}
 	return false
+}
+
+// mayHaveTemplateOrJS: the template rule needs { or <, the call and breakout rules (, the property rules one of
+// jsPropNames; an encoded or fullwidth form may decode to any of them.
+func mayHaveTemplateOrJS(raw string) bool {
+	return mayBeEncoded(raw) || strings.ContainsAny(raw, "{<(") || containsAnyFold(raw, jsPropNames)
 }

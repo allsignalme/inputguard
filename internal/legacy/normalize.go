@@ -1,8 +1,6 @@
-// Package inputguard nhận diện và làm sạch nội dung độc (thẻ script, thuộc tính sự kiện, URL javascript:…)
-// trong dữ liệu đầu vào — dùng chung cho middleware HTTP (pkg/middleware.InputGuard) và chốt publish Kafka
-// (TopicFilter) (TASK-045).
-//
-// Package thuần: không phụ thuộc Gin, DB hay logger.
+// Package legacy is the engine inputguard grew out of, kept unchanged (comments in Vietnamese, as written) as a
+// test oracle: configured like it, the new engine must clean and flag the same way (see parity_test.go). It is not
+// used at run time.
 package legacy
 
 import (

@@ -95,51 +95,112 @@ func mayBeEncoded(s string) bool {
 
 const q = "['\"`]" // a quote that can close a SQL string or identifier
 
-var sqlRe = regexp.MustCompile(strings.Join([]string{
-	// Tautology after a closing quote or parenthesis: ' or 1=1, ") or ("a"="a, ' || 'x' like 'x.
-	"(?:" + q + "|\\))\\s*(?:(?:or|and|xor)\\b|\\|\\||&&)\\s*(?:not\\s+)?[('\"`]*\\s*[\\w.@$]*['\"`]?\\s*" +
-		`(?:=|<>|!=|<=?|>=?|\blike\b|\bis\s+(?:not\s+)?null\b|\bin\s*\(|\bbetween\b|\bregexp\b|\brlike\b)`,
-	// ' or true--, ' or 1#
-	q + `\s*(?:or|\|\|)\s+(?:true|1|not\s+false)\s*(?:--|#|/\*|;|$)`,
-	// Numeric tautology: 1 or 1=1.
-	`\b\d+\s+or\s+\d+\s*(?:=|<|>)\s*\d+`,
-	// A comment right after a quote ends the query: admin'--, admin'#, '/*.
-	q + `\s*;?\s*(?:--(?:\s|$)|#\s*$|/\*)`,
-	// UNION-based extraction, with comments or parentheses as separators.
-	`\bunion\b(?:\s|/\*.*?\*/|\()+(?:all\b|distinct\b)?(?:\s|/\*.*?\*/|\()*select\b`,
-	// Stacked queries.
-	`;\s*(?:drop\s+(?:table|database|schema|view|index|user|function|procedure)\b|truncate\s+(?:table\s+)?[\w.` + "`" +
-		`"]|alter\s+(?:table|database|user)\b|delete\s+from\b|insert\s+into\b|update\s+[\w.` + "`" + `"\[\]]+\s+set\b|` +
-		`exec(?:ute)?\s*(?:xp_|sp_|master\.|\()|shutdown\b|declare\s+@|select\s[\s\S]*?\bfrom\b|` +
-		`create\s+(?:table|user|database|function|procedure|trigger|login)\b|grant\s+\w|waitfor\s+delay\b)`,
-	// Time-based blind injection.
-	`\b(?:sleep|pg_sleep)\s*\(\s*\d+(?:\.\d+)?\s*\)`,
-	`\bbenchmark\s*\(\s*\d+\s*,`,
-	`\bwaitfor\s+(?:delay|time)\s+'`,
-	`\bdbms_(?:pipe\.receive_message|lock\.sleep)\b`,
-	// Catalog and dangerous-function access.
-	`\b(?:information_schema|xp_cmdshell|sp_executesql|sp_oacreate|pg_catalog|sqlite_master|utl_http|utl_inaddr)\b`,
-	`\bsys\.(?:objects|tables|columns|databases|sysobjects)\b`,
-	`\bmysql\.user\b`,
-	`\bload_file\s*\(`,
-	`\binto\s+(?:out|dump)file\b`,
-	`@@(?:version|datadir|hostname|basedir)\b`,
-	`\b(?:extractvalue|updatexml)\s*\(`,
-	`\bchar\s*\(\s*\d+(?:\s*,\s*\d+){3,}\s*\)`,
-}, "|"))
-
-var sqlWords = []string{
-	"union", "sleep", "benchmark", "waitfor", "information_schema", "xp_", "sp_", "pg_", "sqlite_", "mysql.",
-	"sys.", "utl_", "dbms_", "outfile", "dumpfile", "load_file", "extractvalue", "updatexml",
+// sqlFamilies: each pattern family runs only when the literals it needs are present in the lowercased decoded
+// value (a gate costs a few substring searches; the regular expression costs far more).
+var sqlFamilies = []struct {
+	gate func(f string, quote bool) bool
+	re   *regexp.Regexp
+}{
+	{ // Tautology after a closing quote or parenthesis: ' or 1=1, ") or ("a"="a, ' || 'x' like 'x; ' or true--.
+		func(f string, quote bool) bool {
+			return (quote || strings.IndexByte(f, ')') >= 0) && (hasWord(f, "or") || hasWord(f, "and") ||
+				hasWord(f, "xor") || strings.Contains(f, "||") || strings.Contains(f, "&&"))
+		},
+		regexp.MustCompile("(?:" + q + "|\\))\\s*(?:(?:or|and|xor)\\b|\\|\\||&&)\\s*(?:not\\s+)?[('\"`]*\\s*[\\w.@$]*['\"`]?\\s*" +
+			`(?:=|<>|!=|<=?|>=?|\blike\b|\bis\s+(?:not\s+)?null\b|\bin\s*\(|\bbetween\b|\bregexp\b|\brlike\b)` +
+			`|` + q + `\s*(?:or|\|\|)\s+(?:true|1|not\s+false)\s*(?:--|#|/\*|;|$)`),
+	},
+	{ // Numeric tautology: 1 or 1=1.
+		func(f string, _ bool) bool { return hasWord(f, "or") && strings.ContainsAny(f, "=<>") },
+		regexp.MustCompile(`\b\d+\s+or\s+\d+\s*(?:=|<|>)\s*\d+`),
+	},
+	{ // A comment right after a quote ends the query: admin'--, admin'#, '/*.
+		func(f string, quote bool) bool {
+			return quote && (strings.Contains(f, "--") || strings.IndexByte(f, '#') >= 0 || strings.Contains(f, "/*"))
+		},
+		regexp.MustCompile(q + `\s*;?\s*(?:--(?:\s|$)|#\s*$|/\*)`),
+	},
+	{ // UNION-based extraction, with comments or parentheses as separators.
+		func(f string, _ bool) bool { return strings.Contains(f, "union") && strings.Contains(f, "select") },
+		regexp.MustCompile(`\bunion\b(?:\s|/\*.*?\*/|\()+(?:all\b|distinct\b)?(?:\s|/\*.*?\*/|\()*select\b`),
+	},
+	{ // Stacked queries.
+		func(f string, _ bool) bool { return stackedKeyword(f) },
+		regexp.MustCompile(`;\s*(?:drop\s+(?:table|database|schema|view|index|user|function|procedure)\b|truncate\s+(?:table\s+)?[\w.` + "`" +
+			`"]|alter\s+(?:table|database|user)\b|delete\s+from\b|insert\s+into\b|update\s+[\w.` + "`" + `"\[\]]+\s+set\b|` +
+			`exec(?:ute)?\s*(?:xp_|sp_|master\.|\()|shutdown\b|declare\s+@|select\s[\s\S]*?\bfrom\b|` +
+			`create\s+(?:table|user|database|function|procedure|trigger|login)\b|grant\s+\w|waitfor\s+delay\b)`),
+	},
+	{ // Time-based blind injection; catalog and dangerous-function access.
+		func(f string, _ bool) bool {
+			for _, w := range sqlCatalog {
+				if strings.Contains(f, w) {
+					return true
+				}
+			}
+			return false
+		},
+		regexp.MustCompile(strings.Join([]string{
+			`\b(?:sleep|pg_sleep)\s*\(\s*\d+(?:\.\d+)?\s*\)`,
+			`\bbenchmark\s*\(\s*\d+\s*,`,
+			`\bwaitfor\s+(?:delay|time)\s+'`,
+			`\bdbms_(?:pipe\.receive_message|lock\.sleep)\b`,
+			`\b(?:information_schema|xp_cmdshell|sp_executesql|sp_oacreate|pg_catalog|sqlite_master|utl_http|utl_inaddr)\b`,
+			`\bsys\.(?:objects|tables|columns|databases|sysobjects)\b`,
+			`\bmysql\.user\b`,
+			`\bload_file\s*\(`,
+			`\binto\s+(?:out|dump)file\b`,
+			`@@(?:version|datadir|hostname|basedir)\b`,
+			`\b(?:extractvalue|updatexml)\s*\(`,
+			`\bchar\s*\(\s*\d+(?:\s*,\s*\d+){3,}\s*\)`,
+		}, "|")),
+	},
 }
 
-var sqlBytes = byteSet("'\"`;=<>()@#")
+// stackedKeyword: a ";" followed by a statement keyword.
+func stackedKeyword(f string) bool {
+	for i := strings.IndexByte(f, ';'); i >= 0; {
+		j := i + 1
+		for j < len(f) && isRESpace(f[j]) {
+			j++
+		}
+		for _, k := range []string{"drop", "truncate", "alter", "delete", "insert", "update", "exec", "shutdown",
+			"declare", "select", "create", "grant", "waitfor"} {
+			if strings.HasPrefix(f[j:], k) {
+				return true
+			}
+		}
+		next := strings.IndexByte(f[j:], ';')
+		if next < 0 {
+			return false
+		}
+		i = j + next
+	}
+	return false
+}
+
+// Raw-value prefilter for SQL: the bytes some pattern needs, then the keywords of those that need no punctuation,
+// then the catalog names (looked for only when their "_" or "." is there).
+var (
+	sqlBytes      = byteSet("'\"`;=<>()@#")
+	sqlPlainWords = []string{"union", "outfile", "dumpfile"}
+	sqlUnderscore = []string{
+		"information_schema", "xp_cmdshell", "sp_executesql", "sp_oacreate", "pg_catalog", "sqlite_master",
+		"utl_http", "utl_inaddr", "dbms_", "load_file",
+	}
+	sqlDot = []string{"sys.", "mysql.user"}
+)
 
 func mayHaveSQL(s string) bool {
-	if mayBeEncoded(s) || hasAnyByte(s, &sqlBytes) {
+	if mayBeEncoded(s) || hasAnyByte(s, &sqlBytes) || containsAnyFold(s, sqlPlainWords) {
 		return true
 	}
-	for _, w := range sqlWords {
+	return (strings.IndexByte(s, '_') >= 0 && containsAnyFold(s, sqlUnderscore)) ||
+		(strings.IndexByte(s, '.') >= 0 && containsAnyFold(s, sqlDot))
+}
+
+func containsAnyFold(s string, words []string) bool {
+	for _, w := range words {
 		if containsFoldASCII(s, w) {
 			return true
 		}
@@ -147,9 +208,47 @@ func mayHaveSQL(s string) bool {
 	return false
 }
 
+// sqlCatalog: literals the time-based and catalog patterns need.
+var sqlCatalog = []string{
+	"sleep", "benchmark", "waitfor", "dbms_", "information_schema", "xp_cmdshell", "sp_executesql", "sp_oacreate",
+	"pg_catalog", "sqlite_master", "utl_http", "utl_inaddr", "sys.", "mysql.user", "load_file", "outfile",
+	"dumpfile", "@@", "extractvalue", "updatexml", "char(", "char (",
+}
+
+// hasWord: w occurs in s between non-alphanumeric characters.
+func hasWord(s, w string) bool {
+	for i := 0; ; {
+		j := strings.Index(s[i:], w)
+		if j < 0 {
+			return false
+		}
+		j += i
+		k := j + len(w)
+		if (j == 0 || !isWordByte(s[j-1])) && (k == len(s) || !isWordByte(s[k])) {
+			return true
+		}
+		i = j + 1
+	}
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
+}
+
 func detectSQL(_ *Guard, in *input, emit func(RuleID, int)) {
-	if i := matchIndex(sqlRe, in.folded()); i >= 0 {
-		emit(RuleSQLInjection, i)
+	f := in.folded()
+	quote := strings.ContainsAny(f, "'\"`")
+	best := -1
+	for _, fam := range sqlFamilies {
+		if !fam.gate(f, quote) {
+			continue
+		}
+		if i := matchIndex(fam.re, f); i >= 0 && (best < 0 || i < best) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		emit(RuleSQLInjection, best)
 	}
 }
 
@@ -185,12 +284,11 @@ func isNoSQLOperatorKey(k string) bool {
 
 // --- Path traversal ---
 
-var sensitivePaths = []string{
-	"/etc/passwd", "/etc/shadow", "/etc/hosts", "/etc/group", "/proc/self/", "/proc/version", "win.ini", "boot.ini",
-	"/windows/system32", `\windows\system32`, "/var/run/secrets", "/.aws/credentials", "/.ssh/", "/.git/config",
-}
-
 func detectTraversal(_ *Guard, in *input, emit func(RuleID, int)) {
+	if i := overlongAt(in.raw); i >= 0 {
+		emit(RulePathTraversal, -1) // offset in the raw value, not in the decoded one
+		return
+	}
 	f := in.folded()
 	for i := 0; ; {
 		j := strings.Index(f[i:], "..")
@@ -208,7 +306,7 @@ func detectTraversal(_ *Guard, in *input, emit func(RuleID, int)) {
 					k++
 				}
 			}
-			if k == len(f) || isPathSep(f[k]) || overlongSlash(f, k) {
+			if k == len(f) || isPathSep(f[k]) {
 				emit(RulePathTraversal, i)
 				return
 			}
@@ -217,26 +315,53 @@ func detectTraversal(_ *Guard, in *input, emit func(RuleID, int)) {
 		}
 		i += 2
 	}
-	for _, p := range sensitivePaths {
-		if k := strings.Index(f, p); k >= 0 {
+	for k := 0; k < len(f); k++ {
+		if isPathSep(f[k]) && sensitivePathAt(f, k) {
 			emit(RulePathTraversal, k)
 			return
 		}
 	}
 }
 
-// overlongSlash: an overlong UTF-8 form of / or \ (%c0%af, %e0%80%af, %c1%9c) that old decoders turn into a
-// separator.
-func overlongSlash(s string, i int) bool {
-	switch {
-	case i+1 < len(s) && s[i] == 0xC0 && (s[i+1] == 0xAF || s[i+1] == 0xAE):
-		return true
-	case i+1 < len(s) && s[i] == 0xC1 && (s[i+1] == 0x9C || s[i+1] == 0x1C):
-		return true
-	case i+2 < len(s) && s[i] == 0xE0 && s[i+1] == 0x80 && s[i+2] == 0xAF:
-		return true
+// overlongAt: the offset of an overlong UTF-8 sequence written with percent-encoding (%c0%af, %e0%80%ae, nested
+// %25c0%25af…), or -1. Old decoders turned these into / \ and .; no legitimate input contains them, and Normalize
+// replaces them with U+FFFD, so they are looked for before decoding.
+func overlongAt(s string) int {
+	for i := 0; i < len(s); i++ {
+		if s[i] != '%' {
+			continue
+		}
+		j := pctSkip25(s, i+1)
+		if j+1 >= len(s) {
+			continue
+		}
+		v, ok := hexPair(s[j], s[j+1])
+		if !ok {
+			continue
+		}
+		switch v {
+		case 0xC0, 0xC1:
+			return i
+		case 0xE0:
+			if k := j + 2; k < len(s) && s[k] == '%' {
+				k = pctSkip25(s, k+1)
+				if k+1 < len(s) {
+					if w, ok := hexPair(s[k], s[k+1]); ok && w >= 0x80 && w <= 0x9F {
+						return i
+					}
+				}
+			}
+		}
 	}
-	return false
+	return -1
+}
+
+// pctSkip25 skips the "25" of nested percent-encoding (%2525…) at s[j:].
+func pctSkip25(s string, j int) int {
+	for n := 0; n < 3 && j+1 < len(s) && s[j] == '2' && s[j+1] == '5'; n++ {
+		j += 2
+	}
+	return j
 }
 
 // --- Shell commands ---

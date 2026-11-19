@@ -197,7 +197,7 @@ func (w *valueWalker) walkMap(m map[string]any, depth int) {
 	var changes []keyChange
 	for _, k := range sortedKeys(m) {
 		e := w.push(PathSeg{Key: k, Index: -1})
-		drop, nk, renamed := w.g.checkKey(w.rep, k)
+		drop, nk, renamed := w.g.checkKey(w.rep, k, nil)
 		if !drop {
 			if nv, replaced := w.walk(m[k], k, depth); replaced {
 				m[k] = nv
@@ -215,7 +215,7 @@ func (w *valueWalker) walkStringMap(m map[string]string, depth int) {
 	var changes []keyChange
 	for _, k := range sortedKeys(m) {
 		e := w.push(PathSeg{Key: k, Index: -1})
-		drop, nk, renamed := w.g.checkKey(w.rep, k)
+		drop, nk, renamed := w.g.checkKey(w.rep, k, nil)
 		if !drop {
 			if ns, replaced := w.str(m[k], k); replaced {
 				m[k] = ns.(string)

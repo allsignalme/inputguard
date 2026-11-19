@@ -11,20 +11,21 @@ import (
 	"golang.org/x/text/unicode/norm"
 )
 
-// MaxRounds: số vòng giải mã tối đa — đủ cho mã hoá lồng 3 lớp (`%25253C`). Trình duyệt chỉ giải một
-// lớp nên lớp thứ 4 trở lên không còn là payload chạy được; dừng ở đây để chặn chuỗi được dựng cho vòng lặp dài.
+// MaxRounds is the number of decoding rounds: enough for three nested layers (`%25253C`). A browser decodes one
+// layer, so a fourth layer is no longer a working payload; stopping here bounds inputs built to loop.
 const MaxRounds = 3
 
-// Normalized là dạng "trình duyệt sẽ thấy" của một chuỗi đầu vào.
+// Normalized is what a browser or interpreter would see of an input string.
 type Normalized struct {
-	// Decoded: đã giải %XX, thực thể HTML, escape \uXXXX/\xXX, NFKC, bỏ ký tự vô hình — giữ hoa/thường.
-	// Chỉ dùng làm đầu ra khi chuỗi có finding (chuỗi sạch luôn giữ nguyên văn).
+	// Decoded: %XX, HTML entities, \uXXXX / \xXX escapes and NFKC decoded, invisible characters removed, case
+	// kept. Used as output only when the value has a finding (clean values are always kept verbatim).
 	Decoded string
-	// Folded: Decoded hạ chữ thường ASCII, CÙNG độ dài byte ⇒ vị trí khớp luật trên Folded dùng thẳng cho Decoded.
+	// Folded: Decoded with ASCII lowercased, the SAME length in bytes, so an offset found in Folded is valid in
+	// Decoded.
 	Folded string
 }
 
-// Normalize giải mã lặp tới khi chuỗi không đổi (tối đa MaxRounds vòng).
+// Normalize decodes repeatedly until the string stops changing (at most MaxRounds rounds).
 func Normalize(s string) Normalized {
 	d := s
 	for i := 0; i < MaxRounds; i++ {
@@ -34,12 +35,12 @@ func Normalize(s string) Normalized {
 		}
 		d = next
 	}
-	// Vòng cuối có thể sinh ra ký tự vô hình mới (vd `%00`, `\u200b`) — bỏ nốt.
+	// The last round can produce new invisible characters (`%00`, `\u200b`): remove them too.
 	d = StripInvisible(d)
 	return Normalized{Decoded: d, Folded: ASCIILower(d)}
 }
 
-// normalizeRound: một lớp giải mã. Thứ tự %XX trước thực thể để `%26lt%3B` ra `<` ngay trong một vòng.
+// normalizeRound decodes one layer. %XX before entities, so that `%26lt%3B` becomes `<` in a single round.
 func normalizeRound(s string) string {
 	s = StripInvisible(s)
 	s = decodeJSEscapes(s)
@@ -51,15 +52,15 @@ func normalizeRound(s string) string {
 	return s
 }
 
-// isInvisible: ký tự điều khiển / vô hình bị kẻ tấn công chèn để tách từ khoá (`java\u200bscript`).
-// Giữ `\t \n \r` (văn bản hợp lệ) và ZWJ U+200D (ghép emoji gia đình, cờ…).
+// IsInvisible: control and invisible characters inserted to split keywords (`java\u200bscript`). `\t \n \r`
+// (ordinary text) and ZWJ U+200D (emoji sequences: families, flags…) are kept.
 func IsInvisible(r rune) bool {
 	switch {
 	case r == '\t' || r == '\n' || r == '\r':
 		return false
 	case r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f):
 		return true
-	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069: // điều khiển hướng chữ (bidi)
+	case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069: // bidirectional controls
 		return true
 	}
 	switch r {
@@ -78,8 +79,8 @@ func StripInvisible(s string) string {
 	}, s)
 }
 
-// decodePercent giải `%XX` khoan dung: chỉ giải đúng `%` + 2 hex, phần còn lại giữ nguyên (khác url.QueryUnescape
-// trả lỗi cả chuỗi). `+` giữ nguyên. Kết quả luôn là UTF-8 hợp lệ.
+// decodePercent decodes `%XX` leniently: only `%` + 2 hex digits, everything else is kept (url.QueryUnescape
+// fails the whole string instead). `+` is kept. The result is always valid UTF-8.
 func decodePercent(s string) string {
 	if strings.IndexByte(s, '%') < 0 {
 		return s
@@ -109,8 +110,8 @@ func decodePercent(s string) string {
 	return out
 }
 
-// decodeJSEscapes giải escape kiểu JS còn sót trong giá trị: `\uXXXX` (kể cả cặp surrogate), `\u{X…}`, `\xXX`.
-// Chuỗi kiểu này thành `<` khi được nhét vào chuỗi JS rồi ghi ra DOM.
+// decodeJSEscapes decodes JavaScript escapes left in a value: `\uXXXX` (surrogate pairs included), `\u{X…}`,
+// `\xXX`. Such a string becomes `<` once placed in a JavaScript string and written to the DOM.
 func decodeJSEscapes(s string) string {
 	if strings.IndexByte(s, '\\') < 0 {
 		return s
@@ -150,8 +151,8 @@ func decodeJSEscapes(s string) string {
 	return b.String()
 }
 
-// parseUnicodeEscape đọc `\uXXXX` hoặc `\u{X…}` ở đầu s. Trả rune + số byte đã đọc (0 = không phải escape).
-// Surrogate đứng lẻ ⇒ U+FFFD (không bao giờ sinh UTF-8 hỏng).
+// parseUnicodeEscape reads `\uXXXX` or `\u{X…}` at the start of s. It returns the rune and the bytes read (0 = not
+// an escape). A lone surrogate becomes U+FFFD (never invalid UTF-8).
 func parseUnicodeEscape(s string) (rune, int) {
 	if len(s) >= 4 && s[2] == '{' {
 		end := strings.IndexByte(s, '}')
@@ -172,7 +173,7 @@ func parseUnicodeEscape(s string) (rune, int) {
 		return 0, 0
 	}
 	r := rune(v)
-	if r >= 0xd800 && r <= 0xdbff { // high surrogate — cần low surrogate ngay sau
+	if r >= 0xd800 && r <= 0xdbff { // high surrogate: a low surrogate must follow
 		if len(s) >= 12 && s[6] == '\\' && s[7] == 'u' {
 			if lo, ok := hexValue(s[8:12]); ok && lo >= 0xdc00 && lo <= 0xdfff {
 				return (r-0xd800)<<10 + (rune(lo) - 0xdc00) + 0x10000, 12
@@ -217,8 +218,8 @@ func unhex(c byte) (byte, bool) {
 	return 0, false
 }
 
-// asciiLower chỉ hạ A–Z: giữ nguyên độ dài byte (strings.ToLower có thể đổi độ dài với vài rune Unicode) để vị trí
-// khớp trên Folded dùng được cho Decoded. Từ khoá của mọi luật đều là ASCII (sau NFKC) nên vậy là đủ.
+// ASCIILower lowers A–Z only and keeps the length in bytes (strings.ToLower can change it for some runes), so that
+// offsets in Folded are valid in Decoded. Every rule keyword is ASCII (after NFKC), so this is enough.
 func ASCIILower(s string) string {
 	i := 0
 	for i < len(s) && (s[i] < 'A' || s[i] > 'Z') {

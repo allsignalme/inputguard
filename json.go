@@ -137,7 +137,11 @@ type scanner struct {
 	scratch    []byte
 	memberPool [][]member
 	skipStack  []bool
+	knownKeys  map[string]struct{} // key names found clean in this document (they alias src)
 }
+
+// maxKnownKeys bounds the clean-key cache of one document.
+const maxKnownKeys = 256
 
 type member struct {
 	key        string
@@ -166,7 +170,8 @@ func getScanner(g *Guard, src []byte, rep *reporter) *scanner {
 	*sc = scanner{
 		g: g, src: src,
 		edits: sc.edits[:0], scratch: sc.scratch[:0], memberPool: sc.memberPool, skipStack: sc.skipStack[:0],
-		own: reporter{g: g, segs: sc.own.segs[:0]},
+		knownKeys: sc.knownKeys,
+		own:       reporter{g: g, segs: sc.own.segs[:0]},
 	}
 	sc.rep = rep
 	if rep == nil {
@@ -194,6 +199,7 @@ func putScanner(sc *scanner) {
 		sc.memberPool[i] = m[:0]
 	}
 	clear(sc.own.segs[:cap(sc.own.segs)])
+	clear(sc.knownKeys)
 	sc.own.report = Report{}
 	sc.g, sc.src, sc.rep, sc.own.g = nil, nil, nil, nil
 	scannerPool.Put(sc)
@@ -385,7 +391,7 @@ func (sc *scanner) members(ms *[]member, depth int) bool {
 			m.del = g.limitAct == ActionClean
 		} else {
 			entered := sc.pushSeg(PathSeg{Key: key, Index: -1})
-			drop, newKey, renamed := g.checkKey(sc.rep, key)
+			drop, newKey, renamed := g.checkKey(sc.rep, key, &sc.knownKeys)
 			if drop {
 				ok = sc.skipValue()
 			} else {
@@ -583,7 +589,9 @@ func isJSONSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c =
 
 // checkKey runs the key-name rules on the key at the top of the path. It returns whether the member is dropped
 // and, when only offending characters are removed, the new key.
-func (g *Guard) checkKey(rep *reporter, key string) (drop bool, newKey string, renamed bool) {
+// known (optional) holds names already found clean in this document: in an array of objects the same keys come
+// back, and their content check is the costly part. Structural checks still run (they depend on the parent).
+func (g *Guard) checkKey(rep *reporter, key string, known *map[string]struct{}) (drop bool, newKey string, renamed bool) {
 	if g.protoKeys && (key == "__proto__" || (key == "prototype" && rep.parentKey() == "constructor")) {
 		drop = rep.keyRule(RuleProtoPollution) == ActionClean || drop
 	}
@@ -598,6 +606,11 @@ func (g *Guard) checkKey(rep *reporter, key string) (drop bool, newKey string, r
 	}
 	if drop || !g.maybeDirtyAny(key) {
 		return drop, "", false
+	}
+	if known != nil {
+		if _, ok := (*known)[key]; ok {
+			return false, "", false
+		}
 	}
 	// Content rules on the name (also inside exempt subtrees: exemption covers values, not names). A key carrying
 	// markup or code drops the member; offending characters are removed from the name.
@@ -617,6 +630,14 @@ func (g *Guard) checkKey(rep *reporter, key string) (drop bool, newKey string, r
 		if a == ActionClean {
 			clean = true
 			charOnly = charOnly && h.clean == cleanChars
+		}
+	}
+	if n == 0 && known != nil {
+		if *known == nil {
+			*known = make(map[string]struct{}, 16)
+		}
+		if len(*known) < maxKnownKeys {
+			(*known)[key] = struct{}{}
 		}
 	}
 	if !clean {

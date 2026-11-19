@@ -31,8 +31,6 @@ func newHostMatcher(hosts []string) (hostMatcher, error) {
 	return m, nil
 }
 
-func (m hostMatcher) empty() bool { return len(m.exact) == 0 }
-
 // allows reports whether host (already lowercased, no port) is allowed.
 func (m hostMatcher) allows(host string) bool {
 	host = strings.TrimSuffix(host, ".")

@@ -299,8 +299,12 @@ func pctPairHit[T byteSeq](b T, j int, t fastBits, depth int) bool {
 		return j >= 2 && b[j-2] == '\\'
 	case '.', '/', 0xC0, 0xC1:
 		return t&fbTraversal != 0
-	case 0xE0: // %e0%80%af overlong
-		return t&fbTraversal != 0 && pctByteIs(b, j+2, 0x80)
+	case 0xE0: // %e0%80%af overlong (second byte 80–9F)
+		if t&fbTraversal == 0 || j+4 >= len(b) || b[j+2] != '%' {
+			return false
+		}
+		v2, ok := hexPair(b[j+3], b[j+4])
+		return ok && v2 >= 0x80 && v2 <= 0x9F
 	case 0xEF: // fullwidth (EF BC) and small (EF B9) forms of . / \ % & #
 		return pctByteIs(b, j+2, 0xBC) || pctByteIs(b, j+2, 0xB9)
 	case 0xE2: // ․ ‥ … (E2 80 A4–A6)
