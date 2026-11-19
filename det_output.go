@@ -67,10 +67,11 @@ func mayBeFormula(s string) bool {
 	return false
 }
 
-// detectFormula flags a value a spreadsheet would run: it starts with = + - or @ (possibly after tabs or line
-// breaks some importers strip) and goes on to call a function (HYPERLINK(, WEBSERVICE(, SUM() or a DDE server
-// (cmd|). That is what formula attacks need; "-20% (Black Friday)", "=== Sale ===", "==" or "+84 912 345 678" are
-// text. The stored value is what gets exported, so it is read as received (an encoded "%3D…" is not a formula).
+// detectFormula flags a value a spreadsheet would run to reach outside: it starts with = + - or @ (possibly after
+// tabs or line breaks some importers strip) and calls a function that fetches, links or runs something
+// (HYPERLINK, WEBSERVICE, IMPORTXML…) or a DDE server (cmd|'…'). Arithmetic and harmless functions cannot do
+// damage, and text such as "-20% (Black Friday)", "- Combo(2 áo)", "@Admin(VN) team" or "=== Sale ===" passes.
+// The stored value is what gets exported, so it is read as received (an encoded "%3D…" is not a formula).
 func detectFormula(g *Guard, in *input, emit func(RuleID, int)) {
 	if !g.formulaOn.has(in.ctx) {
 		return
@@ -85,8 +86,9 @@ func detectFormula(g *Guard, in *input, emit func(RuleID, int)) {
 	}
 }
 
-// formulaCallRe: a function call (a name right before "(", as spreadsheets require) or a DDE call (name|).
-var formulaCallRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_.]*[(|]`)
+// formulaCallRe: a function that reaches outside the sheet, or a DDE call (server|'command').
+var formulaCallRe = regexp.MustCompile(`(?i)\b(?:hyperlink|webservice|importxml|importdata|importhtml|importfeed|` +
+	`importrange|image|filterxml|call|register(?:\.id)?|exec|rtd|dde)\s*\(|[a-z0-9_.]+\|\s*'|\bcmd\s*\|`)
 
 // --- SSRF ---
 

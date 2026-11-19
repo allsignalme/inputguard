@@ -94,3 +94,20 @@ func TestRegress2_SSRFIgnorableCharacters(t *testing.T) {
 		}
 	}
 }
+
+// v0.1.2: an identifier pasted with a stray character keeps its content; one carrying a payload is still emptied.
+func TestRegress3_IdentifierStrayCharacters(t *testing.T) {
+	g := MustNew(WithMode(ModeReject), WithAction(RuleInvisible, ActionClean))
+	zwsp := string(rune(0x200B))
+	out, r := g.ProcessString("1234567890"+zwsp, CtxIdentifier)
+	if out != "1234567890" || r.Rejected {
+		t.Errorf("zero-width space: %q %+v", out, r)
+	}
+	gc := MustNew()
+	if out, _ := gc.ProcessString("12345"+string(rune(0x07))+"67", CtxIdentifier); out != "1234567" {
+		t.Errorf("control character: %q", out)
+	}
+	if out, _ := gc.ProcessString("123<b>x</b>", CtxIdentifier); out != "" {
+		t.Errorf("payload: %q", out)
+	}
+}

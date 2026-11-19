@@ -108,35 +108,49 @@ var sqlFamilies = []struct {
 	gate func(f string, quote bool) bool
 	re   *regexp.Regexp
 }{
-	{ // Tautology after a closing quote or parenthesis: ' or 1=1, ") or ("a"="a, ' || 'x' like 'x; ' or true--.
+	{ // Tautology after a closing quote or parenthesis: ' or 1=1, ") or ("a"="a, ' or ''=', ' || 'x' like 'x,
+		// ' or username='admin, ' or true--. Both sides of the comparison are literals (or a name compared with a
+		// quoted literal), so that prose such as "(good condition) or like new", "(size 42) and price >= 100" or
+		// "'Hot' or 'New' = tag" is not one.
 		func(f string, quote bool) bool {
 			return (quote || strings.IndexByte(f, ')') >= 0) && (hasWord(f, "or") || hasWord(f, "and") ||
 				hasWord(f, "xor") || strings.Contains(f, "||") || strings.Contains(f, "&&"))
 		},
-		regexp.MustCompile("(?:" + q + "|\\))\\s*(?:(?:or|and|xor)\\b|\\|\\||&&)\\s*(?:not\\s+)?[('\"`]*\\s*[\\w.@$]*['\"`]?\\s*" +
-			`(?:=|<>|!=|<=?|>=?|\blike\b|\bis\s+(?:not\s+)?null\b|\bin\s*\(|\bbetween\b|\bregexp\b|\brlike\b)` +
+		regexp.MustCompile("(?:" + q + `|\))\s*(?:(?:or|and|xor)\b|\|\||&&)\s*(?:not\s+)?\(*\s*(?:` +
+			`(?:'[^']*'|"[^"]*"|\d+(?:\.\d+)?|true|false|null)\s*` +
+			`(?:=|<>|!=|<=?|>=?|\blike\b|\bis\b|\bin\b|\bbetween\b|\bregexp\b|\brlike\b)\s*` +
+			`(?:['"\d(]|true\b|false\b|null\b|not\b)` +
+			`|[a-z_][\w.$]*\s*(?:=|<>|!=|\blike\b)\s*['"])` +
 			`|` + q + `\s*(?:or|\|\|)\s+(?:true|1|not\s+false)\s*(?:--|#|/\*|;|$)`),
 	},
-	{ // Numeric tautology: 1 or 1=1.
-		func(f string, _ bool) bool { return hasWord(f, "or") && strings.ContainsAny(f, "=<>") },
-		regexp.MustCompile(`\b\d+\s+or\s+\d+\s*(?:=|<|>)\s*\d+`),
+	{ // Numeric tautology: 1 or 1=1 (equality: "10 or 20 > 5 items" is prose).
+		func(f string, _ bool) bool { return hasWord(f, "or") && strings.IndexByte(f, '=') >= 0 },
+		regexp.MustCompile(`\b\d+\s+or\s+\d+\s*=\s*\d+`),
 	},
-	{ // A comment right after a quote ends the query: admin'--, admin'#, '/*.
+	{ // A comment right after a quote that closes a value ends the query: admin'--, admin' -- (at the end), admin'#,
+		// 1')--, x'/*. An inch mark before a dash in prose (55" -- 4K) is followed by more text, and a quote that
+		// opens a string ("-----BEGIN PRIVATE KEY-----") closes nothing.
 		func(f string, quote bool) bool {
 			return quote && (strings.Contains(f, "--") || strings.IndexByte(f, '#') >= 0 || strings.Contains(f, "/*"))
 		},
-		regexp.MustCompile(q + `\s*;?\s*(?:--(?:\s|$)|#\s*$|/\*)`),
+		regexp.MustCompile(`(?:^|[\w)])` + q + `\)?(?:--|\s*;\s*--|\s*--\s*$|\s*#\s*$|\s*/\*)`),
 	},
-	{ // UNION-based extraction, with comments or parentheses as separators.
+	{ // UNION-based extraction: UNION [ALL] SELECT followed by what a select list starts with (*, NULL, a number, a
+		// literal, a variable, a column list, a function, FROM). "the European Union (select countries only)" is prose.
 		func(f string, _ bool) bool { return strings.Contains(f, "union") && strings.Contains(f, "select") },
-		regexp.MustCompile(`\bunion\b(?:\s|/\*.*?\*/|\()+(?:all\b|distinct\b)?(?:\s|/\*.*?\*/|\()*select\b`),
+		regexp.MustCompile(`\bunion\b(?:\s|/\*.*?\*/|\()+(?:(?:all|distinct)\b(?:\s|/\*.*?\*/)*)?select\b` +
+			`(?:\s|/\*.*?\*/|\()+(?:\*|null\b|\d|@|'|"|[\w.]+\s*(?:,|\(|\bfrom\b))`),
 	},
-	{ // Stacked queries.
+	{ // Stacked queries. Statements that only SQL uses after any ";"; SELECT … FROM, DELETE FROM, INSERT INTO and
+		// UPDATE … SET only right after a quote, a number or ")" (the end of the injected value), since "Googlebot;
+		// select pages from sitemap" is prose.
 		func(f string, _ bool) bool { return stackedKeyword(f) },
-		regexp.MustCompile(`;\s*(?:drop\s+(?:table|database|schema|view|index|user|function|procedure)\b|truncate\s+(?:table\s+)?[\w.` + "`" +
-			`"]|alter\s+(?:table|database|user)\b|delete\s+from\b|insert\s+into\b|update\s+[\w.` + "`" + `"\[\]]+\s+set\b|` +
-			`exec(?:ute)?\s*(?:xp_|sp_|master\.|\()|shutdown\b|declare\s+@|select\s[\s\S]*?\bfrom\b|` +
-			`create\s+(?:table|user|database|function|procedure|trigger|login)\b|grant\s+\w|waitfor\s+delay\b)`),
+		regexp.MustCompile(`;\s*(?:drop\s+(?:table|database|schema|view|index|user|function|procedure)\b|` +
+			`truncate\s+table\b|alter\s+(?:table|database|user)\b|exec(?:ute)?\s*(?:xp_|sp_|master\.|\()|` +
+			`shutdown\s*(?:;|--|$|with\b)|declare\s+@|create\s+(?:table|user|database|function|procedure|trigger|login)\b|` +
+			`grant\s+(?:all|select|insert|update|delete|execute)\b|waitfor\s+delay\b)` +
+			`|(?:` + q + `|\)|\d)\s*;\s*(?:select\s[\s\S]*?\bfrom\b|delete\s+from\b|insert\s+into\b|` +
+			`update\s+[\w.` + "`" + `"\[\]]+\s+set\b)`),
 	},
 	{ // Time-based blind injection; catalog and dangerous-function access.
 		func(f string, _ bool) bool {
@@ -376,17 +390,17 @@ func pctSkip25(s string, j int) int {
 
 // --- Shell commands ---
 
-// commandRe: a command separator ( ; & | newline ` $( ) followed by a command an attacker runs first. Prose such
-// as "salt; pepper" never matches: the word after the separator must be one of these, mostly with its usual
-// arguments.
+// commandRe: a command separator ( ; & | newline ` $( ) followed by a command an attacker runs first, with the
+// arguments it usually takes; or a command substitution ($(…), `…`) of a probing command; or ${IFS}. Prose such
+// as "salt; pepper", "Bước 1\nReboot router", "Name | ID" or "sku;id;title" never matches.
 var commandRe = regexp.MustCompile("(?:[;&|\\n`]|\\$\\()\\s*(?:" + strings.Join([]string{
-	`rm\s+-[a-z]*[rf]`, `curl\s`, `wget\s`, `nc\s+-`, `ncat\s`, `netcat\s`, `bash\b`, `zsh\b`, `sh\s+-c\b`,
-	`/bin/(?:ba|z|da|k)?sh\b`, `powershell\b`, `pwsh\b`, `cmd(?:\.exe)?\s*/[ck]\b`, `chmod\s+[+0-7ugoa]`, `chown\s`,
-	`sudo\s`, `mkfifo\s`, `telnet\s`, `whoami\b`, `uname\s+-`, `ifconfig\b`, `ipconfig\b`, `nslookup\s`,
-	`base64\s+-d`, `python[23]?\s+-c\b`, `perl\s+-e\b`, `ruby\s+-e\b`, `php\s+-r\b`, `node\s+-e\b`, `sleep\s+\d`,
-	`cat\s+/`, `ping\s+-[cn]\b`, `id\s*(?:$|[;&|` + "`" + `])`, `echo\s+[^;&|\n]*[|>]`, `tftp\s`, `kill\s+-9`,
-	`shutdown\b`, `reboot\b`,
-}, "|") + ")|\\$\\{ifs\\}")
+	`rm\s+-[a-z]*[rf]`, `curl\s+(?:-|https?:|ftp:|file:)`, `wget\s+(?:-|https?:|ftp:)`, `nc\s+-`, `ncat\s`,
+	`netcat\s`, `(?:ba|z|da|k)?sh\s+-[ci]\b`, `/bin/(?:ba|z|da|k)?sh\b`, `powershell\b`, `pwsh\b`,
+	`cmd(?:\.exe)?\s*/[ck]\b`, `chmod\s+[+0-7ugoa]`, `chown\s+\w`, `sudo\s+\w`, `mkfifo\s`, `telnet\s+\w`,
+	`whoami\b`, `uname\s+-`, `ifconfig\b`, `ipconfig\b`, `nslookup\s+\w`, `base64\s+-d`, `python[23]?\s+-c\b`,
+	`perl\s+-e\b`, `ruby\s+-e\b`, `php\s+-r\b`, `node\s+-e\b`, `sleep\s+\d+\s*(?:$|[;&|)` + "`" + `])`, `cat\s+/`,
+	`ping\s+-[cn]\b`, `echo\s+[^;&|\n]*[|>]`, `tftp\s`, `kill\s+-9`, `(?:shutdown|reboot)\s+-`,
+}, "|") + ")|(?:\\$\\(|`)\\s*(?:id|whoami|uname|hostname|pwd|ls|cat|curl|wget|bash|sh|env|printenv)\\b|\\$\\{ifs\\}")
 
 func detectCommand(_ *Guard, in *input, emit func(RuleID, int)) {
 	if i := matchIndex(commandRe, in.folded()); i >= 0 {

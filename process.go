@@ -101,7 +101,7 @@ func (g *Guard) processString(s string, ctx Context, key string, rep *reporter, 
 
 // cleanValue removes the findings whose action is ActionClean.
 func (g *Guard) cleanValue(in *input, hits []hit) string {
-	if in.ctx == CtxIdentifier {
+	if in.ctx == CtxIdentifier && !onlyCharacterHits(g, hits) {
 		return "" // one changed byte breaks an id; an id carrying a payload is not worth keeping
 	}
 	s := in.raw
@@ -162,6 +162,17 @@ func (g *Guard) cleanValue(in *input, hits []hit) string {
 		return ""
 	}
 	return s
+}
+
+// onlyCharacterHits: every finding being cleaned is a stray character (control, bidi, invisible, invalid UTF-8,
+// CR/LF). Removing it restores an identifier pasted with a zero-width space instead of erasing it.
+func onlyCharacterHits(g *Guard, hits []hit) bool {
+	for _, h := range hits {
+		if g.action[h.rule] == ActionClean && h.clean != cleanChars {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *Guard) hasCleanHit(hits []hit, id RuleID) bool {

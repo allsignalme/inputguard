@@ -350,6 +350,9 @@ func FuzzParity_CleanString(f *testing.F) {
 			return
 		}
 		ctx := []Context{CtxText, CtxURL, CtxIdentifier}[int(c)%3]
+		if ctx == CtxIdentifier && legacyHasControl(s) {
+			return // v0.1.2: an identifier whose only finding is a stray character keeps its content (was emptied)
+		}
 		want, _, wantChanged := legacy.CleanString(toLegacyCtx(ctx), s)
 		got, rep := g.ProcessString(s, ctx)
 		if !sameCleaning(got, want) || rep.Changed != wantChanged {
