@@ -88,6 +88,34 @@ func TestInvalidJSON(t *testing.T) {
 	}
 }
 
+// Pairs joined by ";" are inspected too (a handler behind http.AllowQuerySemicolons sees them).
+func TestQuerySemicolons(t *testing.T) {
+	var s seen
+	h := Middleware(Config{Guard: inputguard.MustNew(inputguard.WithMode(inputguard.ModeReject)), Query: true})(
+		http.AllowQuerySemicolons(echo(&s)))
+	if rec := do(t, h, "GET", "/p?a=1;q=%3Cscript%3Ealert(1)%3C/script%3E", "", "", nil); rec.Code != 400 {
+		t.Fatalf("code %d", rec.Code)
+	}
+	var c seen
+	hc := Middleware(Config{Guard: inputguard.MustNew(), Query: true})(echo(&c))
+	do(t, hc, "GET", "/p?a=1;q=x%3Cscript%3E&%3Cb%3E=1&z=2", "", "", nil)
+	if c.query != "a=1;q=x&&z=2" {
+		t.Fatalf("query %q", c.query)
+	}
+}
+
+func TestNDJSON(t *testing.T) {
+	var s seen
+	h := Middleware(Config{Guard: inputguard.MustNew()})(echo(&s))
+	body := "{\"msg\":\"a<b>c</b>\"}\n\n{\"b\":2}\n"
+	if rec := do(t, h, "POST", "/bulk", "application/x-ndjson", body, nil); rec.Code != 204 || s.body != "{\"msg\":\"a\"}\n\n{\"b\":2}\n" {
+		t.Fatalf("code %d body %q", rec.Code, s.body)
+	}
+	if rec := do(t, h, "POST", "/bulk", "application/x-ndjson", "{\"a\":\"<b>\"\n", nil); rec.Code != 400 {
+		t.Fatalf("broken line: %d", rec.Code)
+	}
+}
+
 // A query pair that does not parse does not stop the others from being inspected.
 func TestQueryWithBadPair(t *testing.T) {
 	var s seen
@@ -121,8 +149,9 @@ func TestQueryAndHeaders(t *testing.T) {
 		Headers: []string{"User-Agent"}})(echo(&s))
 	rec := do(t, h, "GET", "/p?q=shoes&ref=%3Cscript%3E&redirect_url=https%3A%2F%2Fshop.example.com%2F", "", "",
 		map[string]string{"User-Agent": "Mozilla/5.0 <svg onload=alert(1)>"})
-	if rec.Code != 204 || !strings.Contains(s.query, "q=shoes") || !strings.HasSuffix(s.query, "&ref=") ||
-		!strings.Contains(s.query, "redirect_url=https%3A%2F%2Fshop.example.com%2F") || s.header != "Mozilla/5.0" {
+	// Only the dirty pair changes; the others keep their order and spelling.
+	if rec.Code != 204 || s.query != "q=shoes&ref=&redirect_url=https%3A%2F%2Fshop.example.com%2F" ||
+		s.header != "Mozilla/5.0" {
 		t.Fatalf("code %d query %q header %q", rec.Code, s.query, s.header)
 	}
 }

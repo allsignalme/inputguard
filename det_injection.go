@@ -326,7 +326,7 @@ func detectTraversal(_ *Guard, in *input, emit func(RuleID, int)) {
 		i += 2
 	}
 	for k := 0; k < len(f); k++ {
-		if isPathSep(f[k]) && (k == 0 || !isPathSep(f[k-1])) && sensitivePathAt(f, k) {
+		if isPathSep(f[k]) && sepRunStart(f, k) && sensitivePathAt(f, k) {
 			emit(RulePathTraversal, k)
 			return
 		}

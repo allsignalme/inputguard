@@ -104,7 +104,8 @@ func DefaultKeyTable() KeyTable {
 	}
 	for _, s := range []string{
 		"url", "uri", "href", "link", "site", "referrer", "referer", "landing", "location", "callback", "website",
-		"src", "origin", "endpoint", "webhook", "image", "avatar", "icon", "logo",
+		"src", "origin", "endpoint", "webhook", "image", "avatar", "icon", "logo", "homepage", "home_page", "blog",
+		"portfolio",
 	} {
 		t.Suffix["_"+s] = CtxURL
 		t.Exact[s] = CtxURL

@@ -7,6 +7,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	textnorm "golang.org/x/text/unicode/norm"
+
 	"github.com/allsignalme/inputguard/internal/norm"
 )
 
@@ -322,6 +324,11 @@ func parseURLLoose(s string) looseURL {
 	}
 	if strings.ContainsAny(auth, "%&\\") || hasNonASCII(auth) {
 		auth = norm.Normalize(auth).Decoded
+	}
+	if hasNonASCII(auth) {
+		// HTTP clients map the host with IDNA (UTS 46, close to NFKC with case folding): ①②⑦.0.0.1 and
+		// ⓛⓞⓒⓐⓛⓗⓞⓢⓣ reach the loopback.
+		auth = textnorm.NFKC.String(auth)
 	}
 	auth = strings.NewReplacer("。", ".", "｡", ".", "．", ".").Replace(auth)
 	host := auth

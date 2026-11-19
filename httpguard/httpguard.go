@@ -117,6 +117,14 @@ func (cfg Config) body(r *http.Request) (inputguard.Report, int) {
 		return inputguard.Report{}, 0
 	}
 	_ = orig.Close()
+	if jsonLines(r) && !onlySpace(data) {
+		out, rep, ok := cfg.lines(data)
+		if !ok {
+			return rep, http.StatusBadRequest
+		}
+		defer setBody(r, out)
+		return rep, 0
+	}
 	if (declared || looks) && !onlySpace(data) {
 		out, rep := cfg.Guard.ProcessJSON(data)
 		if rep.InvalidJSON {
@@ -152,26 +160,66 @@ func looksLikeJSON(b []byte) bool {
 
 func onlySpace(b []byte) bool { return len(bytes.TrimLeft(b, " \t\r\n")) == 0 }
 
+// query inspects every name=value pair, splitting on "&" and on ";" (net/http drops pairs holding ";", but a
+// handler wrapped in http.AllowQuerySemicolons sees them). A pair that does not unescape is inspected as written.
+// When a pair is cleaned, the query is rebuilt with the other pairs and the separators kept as they were.
 func (cfg Config) query(r *http.Request) inputguard.Report {
-	// ParseQuery skips the pairs it cannot parse but returns the others; handlers see the same pairs.
-	values, _ := url.ParseQuery(r.URL.RawQuery)
+	raw := r.URL.RawQuery
 	var all inputguard.Report
+	var out strings.Builder
 	changed := false
-	for name, vs := range values {
-		for i, v := range vs {
-			out, rep := cfg.Guard.ProcessField(name, v)
-			prefix(&rep, "query."+safeName(name))
-			merge(&all, rep)
-			if rep.Changed {
-				vs[i], changed = out, true
-			}
+	for start := 0; start <= len(raw); {
+		end := strings.IndexAny(raw[start:], "&;")
+		if end < 0 {
+			end = len(raw)
+		} else {
+			end += start
 		}
+		pair := raw[start:end]
+		cleaned, rep := cfg.queryPair(pair)
+		merge(&all, rep)
+		if cleaned != pair {
+			changed = true
+		}
+		out.WriteString(cleaned)
+		if end < len(raw) {
+			out.WriteByte(raw[end])
+		}
+		start = end + 1
 	}
 	if changed && !all.Rejected {
-		r.URL.RawQuery = values.Encode()
+		r.URL.RawQuery = out.String()
 		r.RequestURI = r.URL.RequestURI()
 	}
 	return all
+}
+
+// queryPair inspects one pair; it returns the pair to keep ("" when the name itself is malicious).
+func (cfg Config) queryPair(pair string) (string, inputguard.Report) {
+	if pair == "" {
+		return pair, inputguard.Report{}
+	}
+	k, v, _ := strings.Cut(pair, "=")
+	name, err := url.QueryUnescape(k)
+	if err != nil {
+		name = k
+	}
+	value, err := url.QueryUnescape(v)
+	if err != nil {
+		value = v
+	}
+	_, krep := cfg.Guard.ProcessString(name, inputguard.CtxText)
+	prefix(&krep, "query[key]")
+	out, rep := cfg.Guard.ProcessField(name, value)
+	prefix(&rep, "query."+safeName(name))
+	merge(&rep, krep)
+	switch {
+	case krep.Changed:
+		return "", rep
+	case rep.Changed:
+		return url.QueryEscape(name) + "=" + url.QueryEscape(out), rep
+	}
+	return pair, rep
 }
 
 func (cfg Config) headers(r *http.Request) inputguard.Report {
@@ -188,6 +236,51 @@ func (cfg Config) headers(r *http.Request) inputguard.Report {
 		}
 	}
 	return all
+}
+
+// jsonLines: newline-delimited JSON (NDJSON, JSON Lines, JSON text sequences), one document per line.
+func jsonLines(r *http.Request) bool {
+	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		return false
+	}
+	switch mt {
+	case "application/x-ndjson", "application/ndjson", "application/jsonl", "application/x-jsonlines",
+		"application/jsonlines", "application/json-seq":
+		return true
+	}
+	return false
+}
+
+// lines processes a newline-delimited body document by document; blank lines and record separators are kept.
+func (cfg Config) lines(data []byte) ([]byte, inputguard.Report, bool) {
+	var all inputguard.Report
+	var out []byte
+	changed := false
+	for n, line := range bytes.SplitAfter(data, []byte("\n")) {
+		body := bytes.TrimRight(bytes.TrimLeft(line, "\x1e \t"), " \t\r\n")
+		if len(body) == 0 {
+			out = append(out, line...)
+			continue
+		}
+		cleaned, rep := cfg.Guard.ProcessJSON(body)
+		prefix(&rep, "line["+strconv.Itoa(n)+"]")
+		merge(&all, rep)
+		if rep.InvalidJSON {
+			return nil, all, false
+		}
+		if rep.Changed {
+			changed = true
+			i := bytes.Index(line, body)
+			out = append(append(append(out, line[:i]...), cleaned...), line[i+len(body):]...)
+			continue
+		}
+		out = append(out, line...)
+	}
+	if !changed || all.Rejected {
+		return data, all, true
+	}
+	return out, all, true
 }
 
 func declaredJSON(r *http.Request) bool {

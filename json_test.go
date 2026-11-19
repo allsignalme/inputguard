@@ -64,9 +64,14 @@ func TestJSON_CleanBodyIsReturnedAsIs(t *testing.T) {
 
 func TestJSON_EscapedPayloads(t *testing.T) {
 	g := MustNew()
-	expectJSON(t, g, `{"a":"x<script>alert(1)</script>"}`, `{"a":"x"}`)
-	expectJSON(t, g, `{"a":"ok","l":"line sep"}`, `{"a":"ok","l":"line sep"}`)
+	lt, gt := esc("003c"), esc("003e")
+	expectJSON(t, g, `{"a":"x`+lt+`script`+gt+`alert(1)`+lt+`/script`+gt+`"}`, `{"a":"x"}`)
+	ls := `{"a":"ok","l":"line` + esc("2028") + `sep"}`
+	expectJSON(t, g, ls, ls)
 }
+
+// esc spells a JSON \uXXXX escape (built at run time so that no tool rewrites it into the character).
+func esc(hex string) string { return "\\" + "u" + hex }
 
 func TestJSON_PrototypePollution(t *testing.T) {
 	g := MustNew()
@@ -75,7 +80,7 @@ func TestJSON_PrototypePollution(t *testing.T) {
 		t.Errorf("findings %+v", r.Findings)
 	}
 	expectJSON(t, g, `{"constructor":{"prototype":{"x":1}},"b":2}`, `{"constructor":{},"b":2}`)
-	expectJSON(t, g, `{"a":1,"__proto__":{"x":1}}`, `{"a":1}`)
+	expectJSON(t, g, `{"a":1,"`+esc("005f")+`_proto__":{"x":1}}`, `{"a":1}`)
 	expectJSON(t, g, `{"items":[{"__proto__":1,"ok":2}]}`, `{"items":[{"ok":2}]}`)
 	expectJSON(t, g, `{"prototype":1}`, `{"prototype":1}`) // only under constructor
 	r = MustNew(WithMode(ModeReject)).CheckJSON([]byte(`{"__proto__":{}}`))
@@ -293,7 +298,7 @@ func TestJSON_CustomDetector(t *testing.T) {
 
 func TestJSON_UnicodeCleaning(t *testing.T) {
 	g := MustNew()
-	expectJSON(t, g, `{"a":"x‮y"}`, `{"a":"xy"}`)
+	expectJSON(t, g, `{"a":"x`+esc("202e")+`y"}`, `{"a":"xy"}`)
 	out, r := g.ProcessJSON([]byte("{\"a\":\"x\xffy\"}"))
 	if string(out) != `{"a":"x�y"}` || !hasRule(r, RuleInvalidUTF8) {
 		t.Errorf("invalid UTF-8: %s %+v", out, r)

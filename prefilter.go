@@ -21,7 +21,7 @@ func jsonEscape[T byteSeq](b T, i int) (int, bool) {
 		}
 		return 1, false
 	case 'n', 't', 'r':
-		if escRunInWord(b, i, 1) {
+		if escRunInWord(b, i) {
 			return 0, true // tabs / line breaks inside a word: java\t\tscript:
 		}
 		return 1, false

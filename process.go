@@ -241,24 +241,67 @@ func (g *Guard) cleanText(s string, ctx Context, key string) string {
 // its own spelling ("Tom &amp; Jerry 50%25 off <script>" keeps "&amp;" and "%25"). Otherwise the decoded form is
 // kept. The prefix is found by bisection over its decoded length: a few Normalize calls, for dirty values only.
 func (g *Guard) keepRaw(raw, kept string, ctx Context, key string) string {
-	if kept == "" || strings.HasPrefix(raw, kept) {
+	if kept == "" || strings.HasPrefix(raw, kept) || len(raw) > maxKeepRaw {
 		return kept
 	}
-	lo, hi := 0, len(raw)
+	// Candidate cut points: rune boundaries. A cut inside an escape (%2|5, &am|p;) decodes to something that is not
+	// a prefix of kept, which would break the bisection, so a probe that fails is moved forward past such an
+	// escape first.
+	cuts := make([]int, 0, len(raw)+1)
+	for i := range raw {
+		cuts = append(cuts, i)
+	}
+	cuts = append(cuts, len(raw))
+	prefixAt := func(c int) (int, bool) {
+		for j := c; j < len(cuts) && j <= c+maxEscapeLen; j++ {
+			if strings.HasPrefix(kept, norm.Normalize(raw[:cuts[j]]).Decoded) {
+				return j, true
+			}
+			if j > c && !inEscape(raw, cuts[j]) {
+				break
+			}
+		}
+		return 0, false
+	}
+	lo, hi := 0, len(cuts)-1
 	for lo < hi {
 		mid := (lo + hi + 1) / 2
-		if strings.HasPrefix(kept, norm.Normalize(raw[:mid]).Decoded) {
-			lo = mid
+		if j, ok := prefixAt(mid); ok {
+			lo = max(j, mid)
+			if j > mid && j > hi {
+				break
+			}
 		} else {
 			hi = mid - 1
 		}
 	}
-	for _, cand := range [2]string{raw[:lo], strings.TrimRightFunc(raw[:lo], isBreakoutTail)} {
-		if norm.Normalize(cand).Decoded == kept && !g.cleanDirty(cand, ctx, key) {
-			return cand
+	for j := lo; j < len(cuts) && j <= lo+maxEscapeLen; j++ {
+		for _, cand := range [2]string{raw[:cuts[j]], strings.TrimRightFunc(raw[:cuts[j]], isBreakoutTail)} {
+			if norm.Normalize(cand).Decoded == kept && !g.cleanDirty(cand, ctx, key) {
+				return cand
+			}
 		}
 	}
 	return kept
+}
+
+// keepRaw bounds: values longer than this keep the decoded form; an escape spans at most this many characters.
+const (
+	maxKeepRaw   = 64 << 10
+	maxEscapeLen = 12
+)
+
+// inEscape: the cut at i falls inside a percent, entity or backslash escape that started shortly before.
+func inEscape(s string, i int) bool {
+	for k := i - 1; k >= 0 && k >= i-maxEscapeLen; k-- {
+		switch s[k] {
+		case '%', '&', '\\':
+			return true
+		case ';', ' ':
+			return false
+		}
+	}
+	return false
 }
 
 func isBreakoutTail(r rune) bool {

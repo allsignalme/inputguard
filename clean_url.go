@@ -75,20 +75,33 @@ func (g *Guard) cleanHost(auth string) bool {
 	return auth != "" && !strings.ContainsAny(auth, "<>\"'` \t\n\r\\{}|^") && !g.cleanDirty(auth, CtxText, "")
 }
 
-// cleanPath keeps path segments (with their "/") up to the one that makes the kept prefix dirty. Checking the
-// accumulated prefix catches a payload spread over several segments ("'\"--></style></script>…").
+// cleanPath keeps the longest run of leading path segments (with their "/") that is clean. Checking whole prefixes
+// catches a payload spread over several segments ("'\"--></style></script>…"). The prefix is found by bisection
+// over the segment count, so a path of n segments costs O(log n) checks; the result is always a prefix that was
+// checked clean.
 func (g *Guard) cleanPath(path string) string {
 	if !g.cleanDirty(path, CtxText, "") {
 		return path
 	}
-	kept := ""
-	for _, seg := range strings.SplitAfter(path, "/") {
-		if g.cleanDirty(kept+seg, CtxText, "") {
-			break
+	ends := []int{0} // ends[k]: byte length of the first k segments
+	for i := 0; i < len(path); i++ {
+		if path[i] == '/' {
+			ends = append(ends, i+1)
 		}
-		kept += seg
 	}
-	return kept
+	if ends[len(ends)-1] != len(path) {
+		ends = append(ends, len(path))
+	}
+	lo, hi := 0, len(ends)-2 // the whole path (index len-1) is dirty
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if g.cleanDirty(path[:ends[mid]], CtxText, "") {
+			hi = mid - 1
+		} else {
+			lo = mid
+		}
+	}
+	return path[:ends[lo]]
 }
 
 // cleanQuery drops exactly the malicious key=value pairs and keeps the others verbatim and in order. Splits on

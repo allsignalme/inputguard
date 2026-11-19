@@ -121,7 +121,7 @@ func scanFast[T byteSeq](b T, body bool, m fastBits) bool {
 				return true
 			}
 		case '/':
-			if (i == 0 || !isPathSep(b[i-1])) && sensitivePathAt(b, i) {
+			if sepRunStart(b, i) && sensitivePathAt(b, i) {
 				return true
 			}
 		case '\t', '\n', '\r':
@@ -173,7 +173,7 @@ func valueEscapeHit[T byteSeq](b T, i int, t fastBits) bool {
 			return true
 		}
 	}
-	return t&fbTraversal != 0 && (i == 0 || !isPathSep(b[i-1])) && sensitivePathAt(b, i)
+	return t&fbTraversal != 0 && sepRunStart(b, i) && sensitivePathAt(b, i)
 }
 
 // isURLStripped: tab, LF, CR — removed from URLs by browsers, so they can split a keyword.
@@ -192,30 +192,36 @@ func wsRunInWord[T byteSeq](b T, i int) bool {
 	return j < len(b) && isLetter(b[j])
 }
 
-// escRunInWord: in a raw body, b[i] starts a run of escaped tabs / line breaks written with `width` backslashes
-// (1: \t in a string, 2: \\t in a JSON document embedded in a string) with a letter on each side.
-func escRunInWord[T byteSeq](b T, i, width int) bool {
-	isEsc := func(k int) bool {
-		if k < 0 || k+width >= len(b) {
-			return false
-		}
-		for m := 0; m < width; m++ {
-			if b[k+m] != '\\' {
-				return false
-			}
-		}
-		e := b[k+width]
-		return e == 't' || e == 'n' || e == 'r'
-	}
-	step := width + 1
-	if i == 0 || isEsc(i-step) || !isLetter(b[i-1]) {
-		return false
+// escRunInWord: in a raw body, b[i] starts a run of escaped tabs / line breaks, at any nesting depth (\\t in a
+// string, \\\\t in a JSON document embedded in one, \\\\\\\\t one level deeper…), with a letter on each side.
+func escRunInWord[T byteSeq](b T, i int) bool {
+	if i == 0 || !isLetter(b[i-1]) || (i >= 2 && b[i-2] == '\\' && isEscLetter(b[i-1])) {
+		return false // no letter before, or not the start of the run (its start already looked at it)
 	}
 	j := i
-	for isEsc(j) {
-		j += step
+	for {
+		m := j
+		for m < len(b) && b[m] == '\\' {
+			m++
+		}
+		if m == j || m >= len(b) || !isEscLetter(b[m]) {
+			break
+		}
+		j = m + 1
 	}
-	return j < len(b) && isLetter(b[j])
+	return j > i && j < len(b) && isLetter(b[j])
+}
+
+func isEscLetter(c byte) bool { return c == 't' || c == 'n' || c == 'r' }
+
+// sepRunStart: b[i] (a separator) starts a run of separators and "." segments. Only the start of a run looks for
+// a sensitive name, which keeps the scan linear (/./././… included).
+func sepRunStart[T byteSeq](b T, i int) bool {
+	if i == 0 {
+		return true
+	}
+	p := b[i-1]
+	return !isPathSep(p) && !(p == '.' && i >= 2 && isPathSep(b[i-2]))
 }
 
 // jsEscapeAt: b[k] starts what Normalize may decode as a JavaScript escape: u + 4 hex digits or u{…}, x + 2 hex
@@ -264,7 +270,7 @@ func bodyEscapeHit[T byteSeq](b T, i int, t fastBits, nested *int8) (bool, int) 
 			return true, 0
 		}
 	}
-	runStart := i == 0 || !isPathSep(b[i-1])
+	runStart := sepRunStart(b, i)
 	switch e := b[i+1]; e {
 	case 'n', 'r':
 		return t&(fbCRLF|fbCRLFEnc) != 0, 1
@@ -273,33 +279,43 @@ func bodyEscapeHit[T byteSeq](b T, i int, t fastBits, nested *int8) (bool, int) 
 	case '/':
 		return t&fbTraversal != 0 && runStart && sensitivePathAt(b, i), 1
 	case '\\':
-		// An escaped backslash: in the value it starts a JavaScript escape or separates a Windows path; in a JSON
-		// document embedded in a string it starts that document's own escapes (\\t \\n \\b \\u…).
-		if i+2 < n {
-			switch b[i+2] {
+		// A run of backslashes. In the value they are backslashes: a JavaScript escape or a Windows separator may
+		// follow. In a JSON document embedded in a string (at any depth) the character after the run is that
+		// document's own escape (\\t, \\\\t…). The run is handled once, from its start; an odd run ends with an
+		// escape of this level, left to the next iteration.
+		k := 2
+		for i+k < n && b[i+k] == '\\' {
+			k++
+		}
+		skip := k - 1
+		if k%2 == 1 {
+			skip = k - 2
+		}
+		if i+k < n {
+			switch e2 := b[i+k]; e2 {
 			case 'u', 'x':
-				if t&(fbXSS|fbCRLFEnc|fbTraversal) != 0 && jsEscapeAt(b, i+2) {
-					return true, 1
+				if t&(fbXSS|fbCRLFEnc|fbTraversal) != 0 && jsEscapeAt(b, i+k) {
+					return true, skip
 				}
-				if e2, ok := hex4(b, i+3); ok && b[i+2] == 'u' && t&(fbUnicode|fbCRLF|fbProto|fbDollar) != 0 &&
-					(classifyRune(rune(e2)) != uniNone || e2 == '\n' || e2 == '\r' || e2 == '$' ||
-						(e2 < 0x80 && (isLetter(byte(e2)) || e2 == '_'))) {
-					return true, 1
+				if v, ok := hex4(b, i+k+1); ok && e2 == 'u' && t&(fbUnicode|fbCRLF|fbProto|fbDollar) != 0 &&
+					(classifyRune(rune(v)) != uniNone || v == '\n' || v == '\r' || v == '$' ||
+						(v < 0x80 && (isLetter(byte(v)) || v == '_'))) {
+					return true, skip
 				}
 			case 'b', 'f':
 				if t&fbUnicode != 0 && mayNest(b, nested) {
-					return true, 1
+					return true, skip
 				}
 			case 'n', 'r', 't':
-				if t&fbCRLF != 0 && b[i+2] != 't' && mayNest(b, nested) {
-					return true, 1
+				if t&fbCRLF != 0 && e2 != 't' && mayNest(b, nested) {
+					return true, skip
 				}
-				if t&fbXSS != 0 && escRunInWord(b, i, 2) && mayNest(b, nested) {
-					return true, 1
+				if t&fbXSS != 0 && escRunInWord(b, i) && mayNest(b, nested) {
+					return true, skip
 				}
 			}
 		}
-		return t&fbTraversal != 0 && runStart && sensitivePathAt(b, i), 1
+		return t&fbTraversal != 0 && runStart && sensitivePathAt(b, i), skip
 	case 'u':
 		v, ok := hex4(b, i+2)
 		if !ok {
@@ -341,7 +357,7 @@ func mayNest[T byteSeq](b T, state *int8) bool {
 		*state = nestedNo
 		for i := 0; i+1 < len(b); i++ {
 			if b[i] == '\\' {
-				if b[i+1] == '"' {
+				if b[i+1] == '"' || (b[i+1] == 'u' && wordAt(b, i+2, "0022")) {
 					*state = nestedYes
 					break
 				}
