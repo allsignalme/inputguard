@@ -21,9 +21,10 @@ out, report := g.ProcessJSON(body)
   or hash is emptied (one changed byte would break it); a secret is never inspected when rejecting.
 - **Configurable.** Profiles, per-rule and per-severity actions, key tables, path patterns, exemptions, limits,
   allowed redirect hosts, SSRF allow lists, custom detectors.
-- **Tested against attackers' encodings.** Percent-encoding (nested), HTML entities, JSON and JavaScript escapes,
-  fullwidth forms, invisible characters, line breaks inside keywords. Fuzzing checks that cleaning is idempotent,
-  that output stays valid JSON, and that the fast path never skips what the full scan would find.
+- **Tested against attackers' encodings.** Percent-encoding (nested), HTML entities, JSON and JavaScript escapes
+  (also inside JSON embedded in a string), fullwidth and small forms, ligatures, invisible characters, line breaks
+  inside keywords. Fuzzing checks that cleaning is idempotent, that output stays valid JSON, and that the fast
+  checks never change what the rules find.
 
 ```
 go get github.com/allsignalme/inputguard
@@ -92,10 +93,10 @@ How a value is checked and cleaned depends on its context:
 | Context | Cleaning | Chosen for keys like |
 |---|---|---|
 | `CtxText` | cut before the payload | anything else |
-| `CtxURL` | drop the bad parameter, fragment or path segment; a bad scheme or host empties it | `url`, `*_url`, `href`, `src`, `link`… or a value starting with `http(s)://`, `//` |
+| `CtxURL` | drop the bad parameter, fragment or path segment; a bad scheme or host, path traversal or an internal address (`ssrf`) empties it | `url`, `*_url`, `href`, `src`, `link`… or a value starting with `http(s)://`, `//` |
 | `CtxRedirect` | URL rules plus `open_redirect` | `redirect`, `return_to`, `next`, `success_url`… |
 | `CtxIdentifier` | emptied | `id`, `*_id`, `email`, `phone`, hashed fields, click ids, `*_token`… |
-| `CtxSecret` | emptied when cleaning; never inspected when rejecting | `password`, `token`, `api_key`, `*secret*`… |
+| `CtxSecret` | emptied when cleaning (a password with markup would be stored empty: use `CtxSkip` for fields you must keep as sent); never inspected when rejecting | `password`, `token`, `api_key`, `*secret*`… |
 | `CtxPath` | emptied on traversal | `path`, `file`, `filename`, `*_path`… |
 | `CtxHeader` | CR/LF removed | `user_agent`, `cookie`, `host`… |
 | `CtxSkip` | not inspected | — |
@@ -126,6 +127,11 @@ inputguard.WithLimits(inputguard.Limits{
 ```
 
 Nesting past the limit is skipped iteratively (a million `[` does not exhaust the stack) and still validated.
+Limits apply to documents that are scanned; in clean mode a body the fast path clears is returned untouched
+whatever its shape (`OnExceed: ActionReject` scans every body).
+
+A body that is not valid JSON is returned unchanged with `Report.InvalidJSON`. Reject it: Go's `json.Decoder`
+(and frameworks built on it) reads the first value of `{"a":"<script>"} x` and ignores the rest.
 
 ## HTTP
 
@@ -139,8 +145,10 @@ mw := httpguard.Middleware(httpguard.Config{
 http.Handle("/api/", mw(api))
 ```
 
-JSON bodies (`application/json`, `*+json`) are cleaned in place before the handler reads them; a rejected request
-gets `400 {"error":{"code":"input_rejected","message":…,"fields":[{"path":…,"rule":…}]}}`.
+A body is JSON when its Content-Type says so or when it starts with `{` or `[` (handlers decode JSON whatever the
+header says); other bodies, uploads included, pass untouched. JSON bodies are cleaned in place before the handler
+reads them. A rejected request gets `400 {"error":{"code":"input_rejected","message":…,"fields":[{"path":…,"rule":…}]}}`,
+a body that does not parse gets `400 {"error":{"code":"invalid_json",…}}`.
 
 ## Other entry points
 
@@ -182,9 +190,15 @@ engine did not check.
 
 - Reports never contain values, only rule ids, field paths (unsafe key names print as `[key]`) and offsets.
 - The guard is immutable after `New` and safe for concurrent use.
-- Fuzzing (`go test -fuzz`) checks: no panic; valid JSON in, valid JSON out; cleaning is idempotent; the fast path
-  never skips a body or value the full scan would flag; and, configured like it, the same results as the previous
-  engine.
+- Fuzzing (`go test -fuzz`) checks: no panic; valid JSON in, valid JSON out; cleaning is idempotent; the same
+  findings with every fast check switched off; and, configured like it, the same results as the previous engine.
+- Work is linear in the size of the input (no backtracking regular expressions; Go's RE2).
+- Values are decoded the way a browser or a lenient server would before matching: nested percent-encoding, HTML
+  entities, JavaScript escapes, removal of invisible characters, and NFKC for fullwidth forms, small forms, Latin
+  ligatures and dot leaders. Other compatibility characters (mathematical letters, superscripts) are not folded:
+  nothing reads them as markup or code.
+- Free text cut before a payload keeps its own spelling when it decodes to the same text (`Tom &amp; Jerry
+  <script>` keeps `&amp;`); otherwise the kept part is returned decoded.
 - This is a filter, not a substitute for output encoding, parameterized queries, or checking the address an
   outbound request actually connects to. `ssrf` does not resolve DNS names: a name that resolves to a private
   address passes; check at connection time as well.

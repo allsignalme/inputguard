@@ -119,8 +119,8 @@ var ruleTable = []RuleInfo{
 	{RuleTooComplex, CatStructure, SeverityMedium, ProfileBalanced, "document too deep or too large"},
 	{RuleProtoPollution, CatStructure, SeverityCritical, ProfileBalanced, "prototype pollution key"},
 	{RuleDuplicateKey, CatStructure, SeverityMedium, ProfileStrict, "duplicate key"},
-	{RuleKeyOperator, CatStructure, SeverityHigh, ProfileStrict, "operator key"},
-	{RuleKeyInvalid, CatStructure, SeverityMedium, ProfileStrict, "invalid key"},
+	{RuleKeyOperator, CatStructure, SeverityHigh, ProfileOptIn, "operator key"},
+	{RuleKeyInvalid, CatStructure, SeverityMedium, ProfileOptIn, "invalid key"},
 
 	{RuleFormula, CatOutput, SeverityMedium, ProfileStrict, "spreadsheet formula"},
 	{RuleSSRF, CatOutput, SeverityHigh, ProfileStrict, "URL to an internal address"},

@@ -83,9 +83,16 @@ func init() {
 // small form variants, which NFKC folds to ASCII punctuation).
 func mayBeEncoded(s string) bool {
 	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '%', '&', '\\', 0xEF:
+		switch c := s[i]; {
+		case c == '%' || c == '&' || c == '\\' || c == 0xEF:
 			return true
+		case c < 0x20 && c != '\t' && c != '\n' && c != '\r', c == 0x7f:
+			return true // removed by Normalize: it can split a keyword (w\x7findow)
+		case c == 0xC2 && i+1 < len(s) && (s[i+1] <= 0x9F || s[i+1] == 0xAD):
+			return true // C1 control, soft hyphen
+		case (c == 0xE1 || c == 0xE2) && i+2 < len(s) &&
+			((c == 0xE1 && s[i+1] == 0xA0 && s[i+2] == 0x8E) || (c == 0xE2 && isInvisibleE2(s[i+1], s[i+2]))):
+			return true // zero-width, bidi
 		}
 	}
 	return false
@@ -301,12 +308,15 @@ func detectTraversal(_ *Guard, in *input, emit func(RuleID, int)) {
 			for k < len(f) && f[k] == '.' {
 				k++
 			}
+			dots := k - i
 			if k < len(f) && f[k] == ';' { // ..;/ (path parameter, Tomcat / Jetty)
 				for k < len(f) && !isPathSep(f[k]) {
 					k++
 				}
 			}
-			if k == len(f) || isPathSep(f[k]) {
+			// ".." alone or before a separator; three or more dots only before one (....// slips past filters that
+			// strip "../"; a trailing "..." is an ellipsis).
+			if (k < len(f) && isPathSep(f[k])) || (k == len(f) && dots == 2) {
 				emit(RulePathTraversal, i)
 				return
 			}
@@ -316,7 +326,7 @@ func detectTraversal(_ *Guard, in *input, emit func(RuleID, int)) {
 		i += 2
 	}
 	for k := 0; k < len(f); k++ {
-		if isPathSep(f[k]) && sensitivePathAt(f, k) {
+		if isPathSep(f[k]) && (k == 0 || !isPathSep(f[k-1])) && sensitivePathAt(f, k) {
 			emit(RulePathTraversal, k)
 			return
 		}

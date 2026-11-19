@@ -40,6 +40,9 @@ type Guard struct {
 	invalidOn bool
 	// bodyFast: the body fast path covers every enabled rule, so a body it clears is returned without parsing.
 	bodyFast bool
+	// noGates (tests only): no fast check of any kind, every detector runs on every value. The fuzz tests compare
+	// a guard with it against the same guard without, which proves the fast checks never hide a finding.
+	noGates bool
 	// structOnFast: limits must be checked even on bodies the fast path would accept (OnExceed = ActionReject).
 	structOnFast bool
 	// dupKeys / protoKeys / mongoKeys: key checks to run while scanning.

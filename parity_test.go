@@ -12,7 +12,10 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	textnorm "golang.org/x/text/unicode/norm"
+
 	"github.com/allsignalme/inputguard/internal/legacy"
+	"github.com/allsignalme/inputguard/internal/norm"
 )
 
 // The engine this library grew out of is kept in internal/legacy as an oracle: configured like it, the new
@@ -125,7 +128,7 @@ func TestParity_CleanString(t *testing.T) {
 		for _, ctx := range []Context{CtxText, CtxURL, CtxIdentifier} {
 			want, wantFs, wantChanged := legacy.CleanString(toLegacyCtx(ctx), s)
 			got, rep := g.ProcessString(s, ctx)
-			if got != want || rep.Changed != wantChanged {
+			if !sameCleaning(got, want) || rep.Changed != wantChanged {
 				t.Errorf("[%v] %q:\n got  %q changed=%v\n want %q changed=%v", ctx, s, got, rep.Changed, want, wantChanged)
 			}
 			gr := ruleSet(rep.Findings, func(f Finding) RuleID { return f.Rule })
@@ -168,18 +171,12 @@ func legacyHasControl(s string) bool {
 	return false
 }
 
-// TestParity_MaybeDirty: the fast path never skips a body the old engine would clean or flag, and skips every body
-// the old fast path skipped. (It skips more: a backslash before "u" or "x" only counts when an escape can follow,
-// so Windows paths such as C:\Users stay on the fast path.)
+// TestParity_MaybeDirty: the fast path never skips a body the old engine would clean or flag.
 func TestParity_MaybeDirty(t *testing.T) {
 	g := parityGuard(t, false)
 	for _, s := range corpusPayloads(t) {
 		for _, body := range jsonBodies(s) {
-			got := g.MaybeDirty(body)
-			if got && !legacy.MaybeDirty(body) {
-				t.Errorf("%s: MaybeDirty=true, legacy false", body)
-			}
-			if !got {
+			if !g.MaybeDirty(body) {
 				if _, r, _ := legacy.CleanJSON(body, legacy.ModeClean, nil); r.Changed || len(r.Findings) > 0 {
 					t.Errorf("%s: skipped, but the old engine flags %v", body, r.Findings)
 				}
@@ -342,17 +339,38 @@ func FuzzParity_CleanString(f *testing.F) {
 	}
 	g := parityGuard(f, false)
 	f.Fuzz(func(t *testing.T, s string, c uint8) {
-		if !utf8.ValidString(s) || strings.ContainsFunc(s, func(r rune) bool { return r >= 0x80 && r <= 0x9f }) {
-			// Two deliberate differences. The old engine replaced invalid UTF-8 only as a side effect of strings.Map
-			// when it stripped a control character (here: RuleInvalidUTF8, off in the parity configuration), and
-			// RuleControlChar now covers C1 controls (U+0080–U+009F: NEL, CSI…) as well as C0 and DEL.
+		d := norm.Normalize(s).Decoded
+		if !utf8.ValidString(s) || !textnorm.NFKC.IsNormalString(d) || strippedRunInWord(d) ||
+			strings.ContainsFunc(s, func(r rune) bool { return r >= 0x80 && r <= 0x9f }) {
+			// Deliberate differences. The old engine replaced invalid UTF-8 only as a side effect of strings.Map when
+			// it stripped a control character (here: RuleInvalidUTF8, off in the parity configuration);
+			// RuleControlChar now covers C1 controls (U+0080–U+009F: NEL, CSI…) as well as C0 and DEL; and NFKC is
+			// applied only to the compatibility characters the fast path knows (norm.IsFoldable), so values whose
+			// decoded form NFKC would still change (other compatibility characters, combining sequences) differ.
 			return
 		}
 		ctx := []Context{CtxText, CtxURL, CtxIdentifier}[int(c)%3]
 		want, _, wantChanged := legacy.CleanString(toLegacyCtx(ctx), s)
 		got, rep := g.ProcessString(s, ctx)
-		if got != want || rep.Changed != wantChanged {
+		if !sameCleaning(got, want) || rep.Changed != wantChanged {
 			t.Errorf("[%v] %q: got %q (%v), want %q (%v)", ctx, s, got, rep.Changed, want, wantChanged)
 		}
 	})
+}
+
+// strippedRunInWord: two or more tabs / line breaks inside a word ("java\t\tscript:"). The old engine's prefilter
+// let them through (a gap found in review); this one inspects them.
+func strippedRunInWord(s string) bool {
+	for i := 1; i+2 < len(s); i++ {
+		if isLetter(s[i-1]) && isURLStripped(s[i]) && isURLStripped(s[i+1]) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameCleaning: the old engine returned the kept part of a cut value decoded; this one keeps the raw spelling when
+// it decodes to the same text.
+func sameCleaning(got, want string) bool {
+	return got == want || norm.Normalize(got).Decoded == want
 }

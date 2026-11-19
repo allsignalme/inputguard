@@ -46,10 +46,42 @@ func normalizeRound(s string) string {
 	s = decodeJSEscapes(s)
 	s = decodePercent(s)
 	s = html.UnescapeString(s)
-	if !norm.NFKC.IsNormalString(s) {
-		s = norm.NFKC.String(s) // `＜ｓｃｒｉｐｔ＞` → `<script>`
+	return FoldCompat(s) // `＜ｓｃｒｉｐｔ＞` → `<script>`
+}
+
+// IsFoldable: the compatibility characters FoldCompat replaces with their NFKC form — fullwidth ASCII
+// (U+FF01–FF5E), small forms (U+FE50–FE6B), Latin ligatures (U+FB00–FB06) and the dot leaders (U+2024–2026). They
+// are the ones a filter or a later normalisation step can turn into ASCII punctuation and letters. Other
+// compatibility characters (mathematical letters, superscripts…) are left alone: no browser or interpreter reads
+// them as markup or code, and the fast path does not look for them.
+func IsFoldable(r rune) bool {
+	return (r >= 0xFF01 && r <= 0xFF5E) || (r >= 0xFE50 && r <= 0xFE6B) || (r >= 0xFB00 && r <= 0xFB06) ||
+		(r >= 0x2024 && r <= 0x2026)
+}
+
+// FoldCompat replaces the IsFoldable characters of s with their NFKC form.
+func FoldCompat(s string) string {
+	start := -1
+	for i, r := range s {
+		if IsFoldable(r) {
+			start = i
+			break
+		}
 	}
-	return s
+	if start < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	b.WriteString(s[:start])
+	for _, r := range s[start:] {
+		if IsFoldable(r) {
+			b.WriteString(norm.NFKC.String(string(r)))
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // IsInvisible: control and invisible characters inserted to split keywords (`java\u200bscript`). `\t \n \r`

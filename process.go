@@ -2,6 +2,8 @@ package inputguard
 
 import (
 	"strings"
+
+	"github.com/allsignalme/inputguard/internal/norm"
 )
 
 // maxCleanPasses: cutting can expose a new match at the end of what is left ("abc<img" + "<script>" ⇒ the first cut
@@ -143,15 +145,14 @@ func (g *Guard) cleanValue(in *input, hits []hit) string {
 	}
 	if cut {
 		ctx := in.ctx
+		out, ok := "", false
 		if ctx.isURL() {
-			if out, ok := g.cleanURL(s, ctx); ok {
-				s = out
-			} else {
-				s = g.cleanText(s, ctx, in.key)
-			}
-		} else {
-			s = g.cleanText(s, ctx, in.key)
+			out, ok = g.cleanURL(s, ctx)
 		}
+		if !ok {
+			out = g.keepRaw(s, g.cleanText(s, ctx, in.key), ctx, in.key)
+		}
+		s = out
 	}
 	if prefix && s != "" {
 		s = "'" + s
@@ -233,6 +234,31 @@ func (g *Guard) cleanText(s string, ctx Context, key string) string {
 		return ""
 	}
 	return dec
+}
+
+// keepRaw: cleanText returns the kept part decoded (offsets are found in the decoded value). When the raw value
+// starts with a prefix that decodes to exactly that, return the raw prefix instead, so that an untouched part keeps
+// its own spelling ("Tom &amp; Jerry 50%25 off <script>" keeps "&amp;" and "%25"). Otherwise the decoded form is
+// kept. The prefix is found by bisection over its decoded length: a few Normalize calls, for dirty values only.
+func (g *Guard) keepRaw(raw, kept string, ctx Context, key string) string {
+	if kept == "" || strings.HasPrefix(raw, kept) {
+		return kept
+	}
+	lo, hi := 0, len(raw)
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if strings.HasPrefix(kept, norm.Normalize(raw[:mid]).Decoded) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	for _, cand := range [2]string{raw[:lo], strings.TrimRightFunc(raw[:lo], isBreakoutTail)} {
+		if norm.Normalize(cand).Decoded == kept && !g.cleanDirty(cand, ctx, key) {
+			return cand
+		}
+	}
+	return kept
 }
 
 func isBreakoutTail(r rune) bool {

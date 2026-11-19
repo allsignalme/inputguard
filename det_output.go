@@ -108,25 +108,32 @@ var ssrfSchemes = map[string]bool{
 // specialSchemes: URL schemes whose authority browsers parse leniently (any mix of / and \ after the colon).
 var specialSchemes = map[string]bool{"http": true, "https": true, "ws": true, "wss": true, "ftp": true}
 
+// The URL rules read the value twice: as received (what a URL parser and a browser see: %2F@ inside the
+// authority is userinfo, the host comes after it) and fully decoded (what an application that decodes the value
+// once more would fetch). Either reading can flag it.
+func urlReadings(in *input) [2]string { return [2]string{in.raw, in.decoded()} }
+
 func detectSSRF(g *Guard, in *input, emit func(RuleID, int)) {
-	u := parseURLLoose(in.decoded())
+	for _, s := range urlReadings(in) {
+		if g.ssrfTarget(parseURLLoose(s)) {
+			emit(RuleSSRF, 0)
+			return
+		}
+	}
+}
+
+func (g *Guard) ssrfTarget(u looseURL) bool {
 	if ssrfSchemes[u.scheme] {
-		emit(RuleSSRF, 0)
-		return
+		return true
 	}
-	if !u.hasAuthority || u.host == "" {
-		return
-	}
-	if g.ssrfAllow.allowsHost(u.host) {
-		return
+	if !u.hasAuthority || u.host == "" || g.ssrfAllow.allowsHost(u.host) {
+		return false
 	}
 	if internalHostName(u.host) {
-		emit(RuleSSRF, 0)
-		return
+		return true
 	}
-	if a, ok := parseHostIP(u.host); ok && internalAddr(a) && !g.ssrfAllow.allowsAddr(a) {
-		emit(RuleSSRF, 0)
-	}
+	a, ok := parseHostIP(u.host)
+	return ok && internalAddr(a) && !g.ssrfAllow.allowsAddr(a)
 }
 
 // internalHostName: names that resolve to the machine itself, the local network or a cloud metadata service,
@@ -250,17 +257,19 @@ func isZero(b []byte) bool {
 // detectRedirect: a redirect target must be relative (same site) or point at a host allowed by
 // WithRedirectHosts. Forms browsers read as another host are caught too: //evil, /\evil, \\evil, https:evil.
 func detectRedirect(g *Guard, in *input, emit func(RuleID, int)) {
-	u := parseURLLoose(in.decoded())
+	for _, s := range urlReadings(in) {
+		if g.foreignRedirect(parseURLLoose(s)) {
+			emit(RuleRedirect, 0)
+			return
+		}
+	}
+}
+
+func (g *Guard) foreignRedirect(u looseURL) bool {
 	if u.scheme != "" && u.scheme != "http" && u.scheme != "https" {
-		emit(RuleRedirect, 0) // mailto:, ftp:, custom schemes (javascript: is RuleScheme)
-		return
+		return true // mailto:, ftp:, custom schemes (javascript: is RuleScheme)
 	}
-	if !u.hasAuthority {
-		return
-	}
-	if u.host == "" || !g.redirect.allows(u.host) {
-		emit(RuleRedirect, 0)
-	}
+	return u.hasAuthority && (u.host == "" || !g.redirect.allows(u.host))
 }
 
 // --- URL parsing shared by SSRF and redirect checks ---
@@ -338,17 +347,24 @@ func hasNonASCII(s string) bool {
 
 // --- Mixed scripts ---
 
-// mayHaveConfusableScript: Greek (CD–CF), Cyrillic (D0–D4), Armenian (D4–D6) or Cherokee (E1 8E/8F) lead bytes,
-// or an encoded form.
+// mayHaveConfusableScript: a letter of a script that mixes with Latin (see scriptOf), or an encoded form. Latin
+// letters (Latin-1, Latin Extended, Vietnamese) are skipped without a table lookup.
 func mayHaveConfusableScript(s string) bool {
-	for i := 0; i < len(s); i++ {
+	if mayBeEncoded(s) {
+		return true
+	}
+	for i := 0; i < len(s); {
 		c := s[i]
-		switch {
-		case c >= 0xCD && c <= 0xD6:
-			return true
-		case c == 0xE1 && i+1 < len(s) && (s[i+1] == 0x8E || s[i+1] == 0x8F):
-			return true
-		case c == '%' || c == '&' || c == '\\':
+		if c < utf8.RuneSelf {
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		i += size
+		if r < 0x250 || (r >= 0x1E00 && r <= 0x1EFF) {
+			continue
+		}
+		if sc := scriptOf(r); sc != 0 && sc != scriptLatin {
 			return true
 		}
 	}

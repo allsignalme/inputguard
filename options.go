@@ -34,11 +34,17 @@ const (
 	// ProfileStrict (default for ModeReject) adds rules that need context to be sure (templates, SQL, shell,
 	// formulas, SSRF…). Meant for configuration and admin input.
 	ProfileStrict
+	// ProfileOptIn marks rules no profile enables: they are turned on explicitly (WithRules, WithCategories, or
+	// WithKeyPolicy for the store-specific key rules).
+	ProfileOptIn Profile = 255
 )
 
 func (p Profile) String() string {
-	if p == ProfileStrict {
+	switch p {
+	case ProfileStrict:
 		return "strict"
+	case ProfileOptIn:
+		return "opt-in"
 	}
 	return "balanced"
 }
@@ -76,13 +82,16 @@ func (a Action) String() string {
 // Limits bound the work done on one document. Zero means the default; a negative value means no limit.
 type Limits struct {
 	MaxDepth       int // nesting of objects/arrays (default 32)
-	MaxStrings     int // strings (keys and values) per document (default 20 000)
+	MaxStrings     int // string values per document (default 20 000)
 	MaxStringBytes int // bytes in one string (default 1 MiB)
 	MaxMembers     int // members in one object (default 10 000)
 	MaxElements    int // elements in one array (default 100 000)
 	MaxFindings    int // findings kept in a report (default 100)
 	// OnExceed: ActionDefault prunes in ModeClean (the over-limit branch becomes null, an over-limit string that
-	// looks suspicious becomes "") and rejects in ModeReject. ActionReject rejects in both modes.
+	// looks suspicious becomes "") and rejects in ModeReject. ActionReject rejects in both modes; ActionReport keeps
+	// the document and only reports. Limits are applied to documents that are scanned: in ModeClean a body the fast
+	// path clears (nothing in it can match any enabled rule) is returned without being parsed, whatever its shape;
+	// with ActionReject every body is scanned.
 	OnExceed Action
 }
 

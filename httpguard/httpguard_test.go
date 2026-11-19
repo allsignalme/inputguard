@@ -60,10 +60,41 @@ func TestCleanBody(t *testing.T) {
 	if s.body != `{"name":"ok"}` || len(reports) != 1 {
 		t.Fatalf("clean body: %q, reports %d", s.body, len(reports))
 	}
-	// Non-JSON bodies are not inspected.
+	// Non-JSON bodies are not inspected; JSON is recognised by its first byte whatever the Content-Type says.
 	do(t, h, "POST", "/e", "text/plain", `<script>`, nil)
 	if s.body != `<script>` {
 		t.Fatalf("text body: %q", s.body)
+	}
+	do(t, h, "POST", "/e", "text/plain", ` {"a":"x<script>"}`, nil)
+	if s.body != ` {"a":"x"}` {
+		t.Fatalf("JSON sent as text/plain: %q", s.body)
+	}
+	// An empty or whitespace-only JSON body is passed on for the handler to judge.
+	if rec := do(t, h, "POST", "/e", "application/json", "  ", nil); rec.Code != 204 {
+		t.Fatalf("blank body: %d", rec.Code)
+	}
+}
+
+// A body that does not parse is answered 400: a decoder reading only its first value would see what the guard
+// could not.
+func TestInvalidJSON(t *testing.T) {
+	var s seen
+	h := Middleware(Config{Guard: inputguard.MustNew(inputguard.WithMode(inputguard.ModeReject))})(echo(&s))
+	for _, body := range []string{`{"name":"<script>alert(1)</script>"} x`, `{"a":1}{"b":"<script>"}`, `{"a":"<b>"`} {
+		rec := do(t, h, "POST", "/e", "application/json", body, nil)
+		if rec.Code != 400 || s.called || !strings.Contains(rec.Body.String(), "invalid_json") {
+			t.Fatalf("%q: %d %v", body, rec.Code, s.called)
+		}
+	}
+}
+
+// A query pair that does not parse does not stop the others from being inspected.
+func TestQueryWithBadPair(t *testing.T) {
+	var s seen
+	h := Middleware(Config{Guard: inputguard.MustNew(), Query: true})(echo(&s))
+	do(t, h, "GET", "/p?q=%3Cscript%3Ealert(1)%3C/script%3E&x=%zz", "", "", nil)
+	if strings.Contains(s.query, "script") {
+		t.Fatalf("query %q", s.query)
 	}
 }
 
@@ -102,6 +133,11 @@ func TestLimitsAndSkip(t *testing.T) {
 		Skip: func(r *http.Request) bool { return r.URL.Path == "/health" }})(echo(&s))
 	if rec := do(t, h, "POST", "/e", "application/json", `{"a":"0123456789"}`, nil); rec.Code != 413 {
 		t.Fatalf("over limit: %d", rec.Code)
+	}
+	// A large body that is not JSON (an upload) passes whole.
+	upload := "--x\r\n" + strings.Repeat("y", 64)
+	if rec := do(t, h, "POST", "/e", "multipart/form-data; boundary=x", upload, nil); rec.Code != 204 || s.body != upload {
+		t.Fatalf("upload: %d %d bytes", rec.Code, len(s.body))
 	}
 	if rec := do(t, h, "POST", "/health", "application/json", `{"a":"<script>"}`, nil); rec.Code != 204 ||
 		s.body != `{"a":"<script>"}` {

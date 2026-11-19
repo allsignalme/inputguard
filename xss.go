@@ -86,6 +86,9 @@ func scanHandlers(f string) int {
 		if best >= 0 && p > best {
 			break // the quote of the quoted form always comes BEFORE `on`: nothing earlier than best is left
 		}
+		if p > 0 && isLowerASCII(f[p-1]) {
+			continue // inside a word: neither form can start here (and rescanning the word would be quadratic)
+		}
 		q := p + 2
 		for q < len(f) && isLowerASCII(f[q]) {
 			q++

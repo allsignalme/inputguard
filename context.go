@@ -2,6 +2,8 @@ package inputguard
 
 import (
 	"strings"
+
+	"github.com/allsignalme/inputguard/internal/norm"
 )
 
 // Context is what a field is used for. It decides which rules apply and how a value is cleaned.
@@ -177,7 +179,7 @@ func (t KeyTable) classifier() Classifier {
 				return s.ctx
 			}
 		}
-		if looksLikeURL(value) {
+		if looksLikeURLValue(value) {
 			return CtxURL
 		}
 		return CtxText
@@ -195,6 +197,12 @@ func sortByLenDesc[T any](s []T, length func(i int) int) {
 
 func looksLikeURL(v string) bool {
 	return hasPrefixFold(v, "http://") || hasPrefixFold(v, "https://") || strings.HasPrefix(v, "//")
+}
+
+// looksLikeURLValue: the value, as received or decoded, has the shape of a URL. Judging the decoded form too keeps
+// the context stable when cleaning removes what hid the shape ("/\x7f/host" becomes "//host").
+func looksLikeURLValue(v string) bool {
+	return looksLikeURL(v) || (mayBeEncoded(v) && looksLikeURL(norm.Normalize(v).Decoded))
 }
 
 func hasPrefixFold(s, prefix string) bool {

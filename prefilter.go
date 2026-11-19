@@ -21,8 +21,8 @@ func jsonEscape[T byteSeq](b T, i int) (int, bool) {
 		}
 		return 1, false
 	case 'n', 't', 'r':
-		if i > 0 && i+2 < n && isLetter(b[i-1]) && isLetter(b[i+2]) {
-			return 0, true
+		if escRunInWord(b, i, 1) {
+			return 0, true // tabs / line breaks inside a word: java\t\tscript:
 		}
 		return 1, false
 	case 'u':
@@ -64,16 +64,61 @@ func handlerAt[T byteSeq](b T, i int, jsonBody bool) bool {
 		case b[j] == ' ' || b[j] == '\t' || b[j] == '\n' || b[j] == '\r' || b[j] == '\f':
 			j++
 			continue
-		case b[j] == '%' && j+2 < n && b[j+1] == '2' && b[j+2] == '0':
-			j += 3
-			continue
+		case b[j] == '%':
+			if v, end, ok := pctDecode(b, j); ok && (v == ' ' || v == '\t' || v == '\n' || v == '\r' || v == '\f') {
+				j = end
+				continue
+			}
 		case jsonBody && b[j] == '\\' && j+1 < n && (b[j+1] == 't' || b[j+1] == 'n' || b[j+1] == 'r'):
 			j += 2
+			continue
+		case jsonBody && b[j] == '\\' && j+2 < n && b[j+1] == '\\' && (b[j+2] == 't' || b[j+2] == 'n' || b[j+2] == 'r'):
+			j += 3 // the same escape in a JSON document embedded in a string
 			continue
 		}
 		break
 	}
-	return j < n && (b[j] == '=' || (b[j] == '%' && j+2 < n && b[j+1] == '3' && b[j+2]|0x20 == 'd'))
+	if j < n && b[j] == '%' {
+		v, _, ok := pctDecode(b, j)
+		return ok && v == '='
+	}
+	return j < n && b[j] == '='
+}
+
+// pctDecode reads a percent-encoded byte at b[j] == '%', nested encodings included (%253d is "="): the byte, the
+// index after it, ok.
+func pctDecode[T byteSeq](b T, j int) (byte, int, bool) {
+	k := j + 1
+	for n := 0; n < norm.MaxRounds && k+1 < len(b) && b[k] == '2' && b[k+1] == '5'; n++ {
+		k += 2
+	}
+	if k+1 >= len(b) {
+		return 0, 0, false
+	}
+	v, ok := hexPair(b[k], b[k+1])
+	return v, k + 2, ok
+}
+
+// pctDecodedBefore: b[:i] ends with a percent-encoded byte, nested encodings included (%2522 is a quote).
+func pctDecodedBefore[T byteSeq](b T, i int) (byte, bool) {
+	if i < 3 {
+		return 0, false
+	}
+	v, ok := hexPair(b[i-2], b[i-1])
+	if !ok {
+		return 0, false
+	}
+	k := i - 3 // the "%", or the "5" of a nesting "25"
+	for n := 0; n <= norm.MaxRounds && k >= 0; n++ {
+		if b[k] == '%' {
+			return v, true
+		}
+		if k < 1 || b[k-1] != '2' || b[k] != '5' {
+			return 0, false
+		}
+		k -= 2
+	}
+	return 0, false
 }
 
 // handlerBoundary: the byte before `on…=` is an event_handler boundary (start, space, `/`, `;`, a quote), raw, as
@@ -86,10 +131,8 @@ func handlerBoundary[T byteSeq](b T, i int) bool {
 	case ' ', '\t', '\n', '\r', '\f', '/', ';', '"', '\'', '`':
 		return true
 	}
-	if i >= 3 && b[i-3] == '%' {
-		if v, ok := hexPair(b[i-2], b[i-1]); ok && (v == ' ' || v == '/' || v == ';' || v == '"' || v == '\'' || v == '`') {
-			return true
-		}
+	if v, ok := pctDecodedBefore(b, i); ok && (v == ' ' || v == '/' || v == ';' || v == '"' || v == '\'' || v == '`') {
+		return true
 	}
 	return i >= 2 && b[i-2] == '\\' && (b[i-1] == 't' || b[i-1] == 'n' || b[i-1] == 'r')
 }
@@ -160,9 +203,18 @@ func colonNext[T byteSeq](b T, j int) bool {
 
 // dataTypeNear: a dangerous MIME type follows `data` within a few bytes (`data:text/html`, `data%3aapplication/…`).
 func dataTypeNear[T byteSeq](b T, j int) bool {
-	for k := j; k < len(b) && k <= j+8; k++ {
+	for k := j; k < len(b); k++ {
 		if wordAt(b, k, "text/") || wordAt(b, k, "application/") || wordAt(b, k, "image/svg") {
 			return true
+		}
+		switch b[k] {
+		case ':', ' ', '\t', '\n', '\r', '\f':
+			continue // any amount of whitespace may follow the colon
+		case '%', '&', '\\':
+			return true // an encoded character: the slow path decodes it
+		}
+		if k > j+8 {
+			return false
 		}
 	}
 	return false

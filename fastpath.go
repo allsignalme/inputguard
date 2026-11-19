@@ -33,11 +33,14 @@ var fastTrigger = func() (t [256]fastBits) {
 		}
 	}
 	set(fbXSS, "<\\%&oOjJvVlLmMdD")
+	// Invisible characters (controls, C1, soft hyphen, zero-width, bidi, BOM) are removed by Normalize, so they can
+	// split anything a decoding group looks for ("..", a keyword): every such group triggers on them.
+	const decoding = fbXSS | fbUnicode | fbTraversal | fbCRLFEnc
 	for c := 0; c < 0x20; c++ {
-		t[c] |= fbXSS | fbUnicode
+		t[c] |= decoding
 	}
-	t[0x7f] |= fbXSS | fbUnicode
-	set(fbXSS|fbUnicode, "\xC2\xE1\xE2\xEF")
+	t[0x7f] |= decoding
+	set(decoding, "\xC2\xE1\xE2\xEF")
 	set(fbUnicode, "\\")
 	set(fbCRLF, "\r\n\\")
 	set(fbCRLFEnc, "\\%&\xEF")
@@ -51,6 +54,7 @@ var fastTrigger = func() (t [256]fastBits) {
 // escapes not yet decoded); otherwise b is one decoded value.
 func scanFast[T byteSeq](b T, body bool, m fastBits) bool {
 	n := len(b)
+	nested := nestedUnknown
 	for i := 0; i < n; i++ {
 		c := b[i]
 		t := fastTrigger[c] & m
@@ -99,7 +103,7 @@ func scanFast[T byteSeq](b T, body bool, m fastBits) bool {
 				}
 				continue
 			}
-			hit, skip := bodyEscapeHit(b, i, t)
+			hit, skip := bodyEscapeHit(b, i, t, &nested)
 			if hit {
 				return true
 			}
@@ -117,32 +121,29 @@ func scanFast[T byteSeq](b T, body bool, m fastBits) bool {
 				return true
 			}
 		case '/':
-			if sensitivePathAt(b, i) {
+			if (i == 0 || !isPathSep(b[i-1])) && sensitivePathAt(b, i) {
 				return true
 			}
 		case '\t', '\n', '\r':
 			if t&fbCRLF != 0 && !body && c != '\t' {
 				return true
 			}
-			if t&fbXSS != 0 && i > 0 && i+1 < n && isLetter(b[i-1]) && isLetter(b[i+1]) {
-				return true // tab / line break inside a word: java\tscript:
+			if t&fbXSS != 0 && wsRunInWord(b, i) {
+				return true // tabs / line breaks inside a word: java\t\tscript:
 			}
-		case 0xEF: // U+FF00–FFEF fullwidth forms, U+FE50–FE6B small forms, U+FEFF BOM
+		case 0xEF: // EF AC: ligatures; EF B9: small forms; EF BC, EF BD: fullwidth ASCII; EF BB BF: BOM
 			if i+2 < n {
 				b1, b2 := b[i+1], b[i+2]
-				if t&fbXSS != 0 && (b1 == 0xBC || b1 == 0xBD || (b1 == 0xB9 && b2 == 0xA4) || (b1 == 0xBB && b2 == 0xBF)) {
-					return true
+				if t&(fbXSS|fbTraversal|fbCRLFEnc) != 0 && (b1 == 0xAC || b1 == 0xB9 || b1 == 0xBC || b1 == 0xBD) {
+					return true // Normalize folds these to ASCII letters, digits and punctuation
 				}
-				if t&fbUnicode != 0 && b1 == 0xBB && b2 == 0xBF {
-					return true
-				}
-				if t&(fbTraversal|fbCRLFEnc) != 0 && (b1 == 0xBC || b1 == 0xB9) {
-					return true // fullwidth and small forms of . / \ % & #
+				if b1 == 0xBB && b2 == 0xBF {
+					return true // BOM
 				}
 			}
 		case 0xE2:
 			if i+2 < n {
-				if t&(fbXSS|fbUnicode) != 0 && isInvisibleE2(b[i+1], b[i+2]) {
+				if isInvisibleE2(b[i+1], b[i+2]) {
 					return true
 				}
 				if t&fbTraversal != 0 && b[i+1] == 0x80 && b[i+2] >= 0xA4 && b[i+2] <= 0xA6 {
@@ -172,7 +173,49 @@ func valueEscapeHit[T byteSeq](b T, i int, t fastBits) bool {
 			return true
 		}
 	}
-	return t&fbTraversal != 0 && sensitivePathAt(b, i)
+	return t&fbTraversal != 0 && (i == 0 || !isPathSep(b[i-1])) && sensitivePathAt(b, i)
+}
+
+// isURLStripped: tab, LF, CR — removed from URLs by browsers, so they can split a keyword.
+func isURLStripped(c byte) bool { return c == '\t' || c == '\n' || c == '\r' }
+
+// wsRunInWord: b[i] starts a run of raw tabs / line breaks with a letter on each side. Only the start of a run
+// does the work, so a long run costs one pass.
+func wsRunInWord[T byteSeq](b T, i int) bool {
+	if i == 0 || isURLStripped(b[i-1]) || !isLetter(b[i-1]) {
+		return false
+	}
+	j := i
+	for j < len(b) && isURLStripped(b[j]) {
+		j++
+	}
+	return j < len(b) && isLetter(b[j])
+}
+
+// escRunInWord: in a raw body, b[i] starts a run of escaped tabs / line breaks written with `width` backslashes
+// (1: \t in a string, 2: \\t in a JSON document embedded in a string) with a letter on each side.
+func escRunInWord[T byteSeq](b T, i, width int) bool {
+	isEsc := func(k int) bool {
+		if k < 0 || k+width >= len(b) {
+			return false
+		}
+		for m := 0; m < width; m++ {
+			if b[k+m] != '\\' {
+				return false
+			}
+		}
+		e := b[k+width]
+		return e == 't' || e == 'n' || e == 'r'
+	}
+	step := width + 1
+	if i == 0 || isEsc(i-step) || !isLetter(b[i-1]) {
+		return false
+	}
+	j := i
+	for isEsc(j) {
+		j += step
+	}
+	return j < len(b) && isLetter(b[j])
 }
 
 // jsEscapeAt: b[k] starts what Normalize may decode as a JavaScript escape: u + 4 hex digits or u{…}, x + 2 hex
@@ -211,7 +254,7 @@ func isHexDigit(c byte) bool {
 
 // bodyEscapeHit: a JSON escape at b[i] in a raw body. Returns whether it may matter and how many bytes it spans
 // beyond the backslash.
-func bodyEscapeHit[T byteSeq](b T, i int, t fastBits) (bool, int) {
+func bodyEscapeHit[T byteSeq](b T, i int, t fastBits, nested *int8) (bool, int) {
 	n := len(b)
 	if i+1 >= n {
 		return false, 0
@@ -221,19 +264,42 @@ func bodyEscapeHit[T byteSeq](b T, i int, t fastBits) (bool, int) {
 			return true, 0
 		}
 	}
+	runStart := i == 0 || !isPathSep(b[i-1])
 	switch e := b[i+1]; e {
 	case 'n', 'r':
 		return t&(fbCRLF|fbCRLFEnc) != 0, 1
 	case 'b', 'f':
 		return t&fbUnicode != 0, 1
 	case '/':
-		return t&fbTraversal != 0 && sensitivePathAt(b, i), 1
+		return t&fbTraversal != 0 && runStart && sensitivePathAt(b, i), 1
 	case '\\':
-		// An escaped backslash: in the value it starts a JavaScript escape or separates a Windows path.
-		if t&(fbCRLFEnc|fbTraversal) != 0 && jsEscapeAt(b, i+2) {
-			return true, 1
+		// An escaped backslash: in the value it starts a JavaScript escape or separates a Windows path; in a JSON
+		// document embedded in a string it starts that document's own escapes (\\t \\n \\b \\u…).
+		if i+2 < n {
+			switch b[i+2] {
+			case 'u', 'x':
+				if t&(fbXSS|fbCRLFEnc|fbTraversal) != 0 && jsEscapeAt(b, i+2) {
+					return true, 1
+				}
+				if e2, ok := hex4(b, i+3); ok && b[i+2] == 'u' && t&(fbUnicode|fbCRLF|fbProto|fbDollar) != 0 &&
+					(classifyRune(rune(e2)) != uniNone || e2 == '\n' || e2 == '\r' || e2 == '$' ||
+						(e2 < 0x80 && (isLetter(byte(e2)) || e2 == '_'))) {
+					return true, 1
+				}
+			case 'b', 'f':
+				if t&fbUnicode != 0 && mayNest(b, nested) {
+					return true, 1
+				}
+			case 'n', 'r', 't':
+				if t&fbCRLF != 0 && b[i+2] != 't' && mayNest(b, nested) {
+					return true, 1
+				}
+				if t&fbXSS != 0 && escRunInWord(b, i, 2) && mayNest(b, nested) {
+					return true, 1
+				}
+			}
 		}
-		return t&fbTraversal != 0 && sensitivePathAt(b, i), 1
+		return t&fbTraversal != 0 && runStart && sensitivePathAt(b, i), 1
 	case 'u':
 		v, ok := hex4(b, i+2)
 		if !ok {
@@ -259,6 +325,31 @@ func bodyEscapeHit[T byteSeq](b T, i int, t fastBits) (bool, int) {
 		return false, 5
 	}
 	return false, 1
+}
+
+const (
+	nestedUnknown int8 = iota
+	nestedYes
+	nestedNo
+)
+
+// mayNest: the body holds an escaped quote, so a string may hold a JSON document whose own escapes (\\b \\t…)
+// decode one level further. A Windows path (C:\\bin) in a body without one stays on the fast path. Computed once
+// per scan.
+func mayNest[T byteSeq](b T, state *int8) bool {
+	if *state == nestedUnknown {
+		*state = nestedNo
+		for i := 0; i+1 < len(b); i++ {
+			if b[i] == '\\' {
+				if b[i+1] == '"' {
+					*state = nestedYes
+					break
+				}
+				i++
+			}
+		}
+	}
+	return *state == nestedYes
 }
 
 // percentHit: b[i] stands for "%". For the decoding groups, %XX matters when it decodes to a line break, a dot or
@@ -293,6 +384,10 @@ func pctPairHit[T byteSeq](b T, j int, t fastBits, depth int) bool {
 		return ampHit(b, j+1, t)
 	case '\r', '\n':
 		return t&fbCRLFEnc != 0
+	case 0xC2: // C1 control or soft hyphen: removed by Normalize, it can join what surrounds it (%0%00A0)
+		return pctByteIn(b, j+2, 0x80, 0x9F) || pctByteIs(b, j+2, 0xAD)
+	case 0xE1: // U+180E
+		return pctByteIs(b, j+2, 0xA0)
 	case '\\': // a separator, or the start of a JavaScript escape decoded in the next round
 		return true
 	case 'u', 'x': // \%75002e: the escape letter itself encoded
@@ -305,16 +400,33 @@ func pctPairHit[T byteSeq](b T, j int, t fastBits, depth int) bool {
 		}
 		v2, ok := hexPair(b[j+3], b[j+4])
 		return ok && v2 >= 0x80 && v2 <= 0x9F
-	case 0xEF: // fullwidth (EF BC) and small (EF B9) forms of . / \ % & #
-		return pctByteIs(b, j+2, 0xBC) || pctByteIs(b, j+2, 0xB9)
-	case 0xE2: // ․ ‥ … (E2 80 A4–A6)
-		if t&fbTraversal == 0 || !pctByteIs(b, j+2, 0x80) || j+7 >= len(b) || b[j+5] != '%' {
+	case 0xEF: // ligatures (EF AC), small (EF B9) and fullwidth (EF BC, EF BD) forms
+		return pctByteIs(b, j+2, 0xAC) || pctByteIs(b, j+2, 0xB9) || pctByteIs(b, j+2, 0xBC) || pctByteIs(b, j+2, 0xBD)
+	case 0xE2: // ․ ‥ … (E2 80 A4–A6), zero-width and bidi characters
+		if j+7 >= len(b) || b[j+2] != '%' || b[j+5] != '%' {
 			return false
 		}
-		v3, ok := hexPair(b[j+6], b[j+7])
-		return ok && v3 >= 0xA4 && v3 <= 0xA6
+		v2, ok2 := hexPair(b[j+3], b[j+4])
+		v3, ok3 := hexPair(b[j+6], b[j+7])
+		if !ok2 || !ok3 {
+			return false
+		}
+		return isInvisibleE2(v2, v3) || (t&fbTraversal != 0 && v2 == 0x80 && v3 >= 0xA4 && v3 <= 0xA6)
 	}
-	return false
+	if v < 0x20 || v == 0x7f {
+		return true // a control character Normalize removes, joining what surrounds it
+	}
+	// An encoded letter or digit (encoders never produce them) can spell a file name: /%65tc/passwd.
+	return t&fbTraversal != 0 && v < 0x80 && (isLetter(v) || ('0' <= v && v <= '9'))
+}
+
+// pctByteIn: b[k:] is "%XX" decoding to a byte in [lo, hi].
+func pctByteIn[T byteSeq](b T, k int, lo, hi byte) bool {
+	if k+2 >= len(b) || b[k] != '%' {
+		return false
+	}
+	v, ok := hexPair(b[k+1], b[k+2])
+	return ok && v >= lo && v <= hi
 }
 
 // pctByteIs: b[k:] is "%XX" decoding to c.
@@ -357,11 +469,9 @@ var sensitiveFiles = []string{
 }
 
 // sensitivePathAt: at b[i] a run of separators is followed by a sensitive file name (ASCII case-insensitive).
+// Callers start at the first separator of a run, which keeps the scan linear.
 func sensitivePathAt[T byteSeq](b T, i int) bool {
-	j := i
-	for j < len(b) && isPathSep(b[j]) {
-		j++
-	}
+	j := skipSeparators(b, i)
 	if j == i || j >= len(b) {
 		return false
 	}
@@ -381,15 +491,15 @@ var sensitiveByFirst = func() (t [256][]string) {
 	return t
 }()
 
+// pathWordAt: b[j:] spells w, "/" in w standing for a run of separators (with "." segments: /etc/./passwd), and
+// the name ends there (/etc/group-tours is not /etc/group).
 func pathWordAt[T byteSeq](b T, j int, w string) bool {
 	for k := 0; k < len(w); k++ {
 		if w[k] == '/' {
 			if j >= len(b) || !isPathSep(b[j]) {
 				return false
 			}
-			for j < len(b) && isPathSep(b[j]) {
-				j++
-			}
+			j = skipSeparators(b, j)
 			continue
 		}
 		if j >= len(b) || lowerByte(b[j]) != w[k] {
@@ -397,7 +507,26 @@ func pathWordAt[T byteSeq](b T, j int, w string) bool {
 		}
 		j++
 	}
-	return true
+	last := w[len(w)-1]
+	return last == '/' || j >= len(b) || !(isWordByte(b[j]) || b[j] == '-')
+}
+
+// skipSeparators skips a run of / and \ and the "." segments between them, starting at a separator.
+func skipSeparators[T byteSeq](b T, j int) int {
+	if j >= len(b) || !isPathSep(b[j]) {
+		return j
+	}
+	for j < len(b) {
+		switch {
+		case isPathSep(b[j]):
+			j++
+		case b[j] == '.' && j+1 < len(b) && isPathSep(b[j+1]):
+			j += 2
+		default:
+			return j
+		}
+	}
+	return j
 }
 
 func isPathSep(c byte) bool { return c == '/' || c == '\\' }

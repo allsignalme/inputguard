@@ -16,10 +16,12 @@ import (
 //   - cleaned: a new slice in which only the cleaned strings and removed members differ; the rest of the document
 //     is kept byte for byte (key order, number formatting, whitespace);
 //   - rejected (Report.Rejected): the input slice, unchanged;
-//   - not valid JSON (Report.InvalidJSON): the input slice, unchanged and not inspected.
+//   - not valid JSON (Report.InvalidJSON): the input slice, unchanged. Do not pass it on: a decoder that reads only
+//     the first value of `{"a":"<script>"} x` sees what the guard could not inspect (httpguard answers 400).
 //
 // In ModeClean a body that cannot contain anything an enabled rule flags is returned after one pass over its
-// bytes, without parsing or allocating.
+// bytes, without parsing or allocating (so neither InvalidJSON nor the limits are evaluated for it: it holds
+// nothing to clean either way).
 func (g *Guard) ProcessJSON(body []byte) ([]byte, Report) { return g.processJSON(body, true) }
 
 // CheckJSON returns the report ProcessJSON would return, without building the cleaned body.
@@ -61,31 +63,6 @@ func (g *Guard) processJSON(body []byte, build bool) ([]byte, Report) {
 		g.observer(r)
 	}
 	return body, r
-}
-
-func (g *Guard) structHintString(s string) bool {
-	if g.dupKeys || g.mongoInvalid {
-		return true
-	}
-	if (g.mongoOperator || g.nosqlKeys) && strings.IndexByte(s, '$') >= 0 {
-		return true
-	}
-	if !g.protoKeys {
-		return false
-	}
-	if strings.Contains(s, "proto") {
-		return true
-	}
-	for i := 0; ; {
-		j := strings.Index(s[i:], `\u`)
-		if j < 0 {
-			return false
-		}
-		i += j + 2
-		if v, ok := hex4(s, i); ok && v < 0x80 && (isLetter(byte(v)) || v == '_') {
-			return true
-		}
-	}
 }
 
 var (
@@ -527,11 +504,12 @@ func (sc *scanner) stringValue(s, key string, start, end, depth int) {
 	if sc.exempt > 0 {
 		return
 	}
-	dirty := g.maybeDirtyAny(s)
-	if g.embedJSON && looksLikeJSONContainer(s) && (dirty || g.structHintString(s)) && sc.embedded(s, key, start, end, depth) {
+	// A string holding a JSON document is scanned as one, whatever the fast check says about it as a whole: its
+	// own escapes decode one level further (\\t in the outer document is a tab inside).
+	if g.embedJSON && looksLikeJSONContainer(s) && sc.embedded(s, key, start, end, depth) {
 		return
 	}
-	if !dirty {
+	if !g.maybeDirtyAny(s) {
 		return
 	}
 	ctx := g.contextFor(sc.rep.segs, key, s)

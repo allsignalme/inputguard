@@ -65,12 +65,10 @@ func FuzzProcessJSON(f *testing.F) {
 					t.Fatalf("guard %d: not idempotent:\n in   %q\n out  %q\n out2 %q\n %+v", gi, data, out, out2, r2.Findings)
 				}
 			}
-			if g.bodyFast && !g.MaybeDirty(data) {
-				slow := *g
-				slow.bodyFast = false
-				if _, rs := slow.ProcessJSON(data); rs.Changed || len(rs.Findings) > 0 {
-					t.Fatalf("guard %d: fast path skipped %q: %+v", gi, data, rs.Findings)
-				}
+			slow := *g
+			slow.bodyFast, slow.noGates = false, true
+			if rs := slow.CheckJSON(data); !sameRules(r, rs) {
+				t.Fatalf("guard %d: fast checks change the findings of %q:\n fast %v\n slow %v", gi, data, r.Findings, rs.Findings)
 			}
 		}
 	})
@@ -100,6 +98,32 @@ func FuzzProcessString(f *testing.F) {
 			if !g.MaybeDirtyString(s) && len(r.Findings) > 0 {
 				t.Fatalf("guard %d [%v]: per-value fast path skipped %q: %v", gi, ctx, s, r.Rules())
 			}
+			slow := *g
+			slow.noGates = true
+			if rs := slow.CheckString(s, ctx); !sameRules(r, rs) {
+				t.Fatalf("guard %d [%v]: fast checks change the findings of %q: %v vs %v", gi, ctx, s, r.Rules(), rs.Rules())
+			}
 		}
 	})
+}
+
+// sameRules: the same (path, rule) findings, in any order. Offsets may differ (a cut changes what a later rule sees).
+func sameRules(a, b Report) bool {
+	key := func(r Report) map[string]bool {
+		m := map[string]bool{}
+		for _, f := range r.Findings {
+			m[f.Path+" "+string(f.Rule)] = true
+		}
+		return m
+	}
+	ka, kb := key(a), key(b)
+	if len(ka) != len(kb) {
+		return false
+	}
+	for k := range ka {
+		if !kb[k] {
+			return false
+		}
+	}
+	return true
 }

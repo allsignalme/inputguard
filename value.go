@@ -264,8 +264,7 @@ func (w *valueWalker) str(s, key string) (any, bool) {
 	if w.exempt > 0 {
 		return s, false
 	}
-	dirty := g.maybeDirtyAny(s)
-	if g.embedJSON && looksLikeJSONContainer(s) && (dirty || g.structHintString(s)) {
+	if g.embedJSON && looksLikeJSONContainer(s) {
 		if out, ok := w.embedded(s, key); ok {
 			if out == s {
 				return s, false
@@ -273,7 +272,7 @@ func (w *valueWalker) str(s, key string) (any, bool) {
 			return w.leaf(s, out)
 		}
 	}
-	if !dirty {
+	if !g.maybeDirtyAny(s) {
 		return s, false
 	}
 	out, changed := g.processString(s, g.contextFor(r.segs, key, s), key, r, false)

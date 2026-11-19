@@ -1,8 +1,11 @@
 // Package httpguard runs an inputguard.Guard on incoming HTTP requests: the JSON body, and optionally query
 // parameters and selected headers.
 //
-// Clean mode replaces the request body (and query) with the cleaned version before the handler reads it; a
-// rejected request gets a 400 response listing the rules and fields, never the values.
+// A body is treated as JSON when its Content-Type says so or when it starts (after whitespace) with { or [:
+// handlers decode JSON whatever the header says. A JSON body that does not parse is answered with 400 (a decoder
+// that reads only the first value would otherwise see what the guard could not). Clean mode replaces the body (and
+// query) with the cleaned version before the handler reads it; a rejected request gets a 400 response listing the
+// rules and fields, never the values.
 package httpguard
 
 import (
@@ -23,8 +26,8 @@ import (
 type Config struct {
 	// Guard inspects the request. Required.
 	Guard *inputguard.Guard
-	// MaxBodyBytes: a larger JSON body is answered with 413 without being read further. 0 means 1 MiB; a negative
-	// value means no limit.
+	// MaxBodyBytes: a larger JSON body is answered with 413 without being read further (a larger body that is not
+	// JSON passes untouched). 0 means 1 MiB; a negative value means no limit.
 	MaxBodyBytes int64
 	// Query: also inspect URL query parameters, each classified by its name.
 	Query bool
@@ -64,9 +67,14 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 			if cfg.Query && r.URL.RawQuery != "" {
 				merge(&all, cfg.query(r))
 			}
-			if isJSON(r) && r.Body != nil && r.Body != http.NoBody {
+			if r.Body != nil && r.Body != http.NoBody {
 				rep, status := cfg.body(r)
-				if status != 0 {
+				switch status {
+				case 0:
+				case http.StatusBadRequest:
+					writeError(w, "invalid_json", "request body is not valid JSON")
+					return
+				default:
 					http.Error(w, http.StatusText(status), status)
 					return
 				}
@@ -86,39 +94,67 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 	}
 }
 
-// body processes a JSON body. A non-zero status means the request must be answered with it.
+// body processes the body when it is JSON. A non-zero status means the request must be answered with it.
 func (cfg Config) body(r *http.Request) (inputguard.Report, int) {
-	var reader io.Reader = r.Body
+	orig := r.Body
+	var reader io.Reader = orig
 	if cfg.MaxBodyBytes > 0 {
-		if r.ContentLength > cfg.MaxBodyBytes {
-			return inputguard.Report{}, http.StatusRequestEntityTooLarge
-		}
-		reader = io.LimitReader(r.Body, cfg.MaxBodyBytes+1)
+		reader = io.LimitReader(orig, cfg.MaxBodyBytes+1)
 	}
 	data, err := io.ReadAll(reader)
-	_ = r.Body.Close()
 	if err != nil {
-		return inputguard.Report{}, http.StatusBadRequest
-	}
-	if cfg.MaxBodyBytes > 0 && int64(len(data)) > cfg.MaxBodyBytes {
+		_ = orig.Close()
 		return inputguard.Report{}, http.StatusRequestEntityTooLarge
 	}
-	out, rep := cfg.Guard.ProcessJSON(data)
-	if rep.Changed {
-		data = out
+	declared, looks := declaredJSON(r), looksLikeJSON(data)
+	if cfg.MaxBodyBytes > 0 && int64(len(data)) > cfg.MaxBodyBytes {
+		if declared || looks || onlySpace(data) {
+			_ = orig.Close()
+			return inputguard.Report{}, http.StatusRequestEntityTooLarge
+		}
+		// Not JSON (an upload…): hand the handler what was read and the rest.
+		r.Body = readCloser{io.MultiReader(bytes.NewReader(data), orig), orig}
+		return inputguard.Report{}, 0
 	}
+	_ = orig.Close()
+	if (declared || looks) && !onlySpace(data) {
+		out, rep := cfg.Guard.ProcessJSON(data)
+		if rep.InvalidJSON {
+			return rep, http.StatusBadRequest
+		}
+		if rep.Changed {
+			data = out
+		}
+		defer setBody(r, data)
+		return rep, 0
+	}
+	setBody(r, data)
+	return inputguard.Report{}, 0
+}
+
+func setBody(r *http.Request, data []byte) {
 	r.Body = io.NopCloser(bytes.NewReader(data))
 	r.ContentLength = int64(len(data))
 	r.Header.Set("Content-Length", strconv.Itoa(len(data)))
 	r.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(data)), nil }
-	return rep, 0
 }
 
+type readCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// looksLikeJSON: the first non-whitespace byte opens an object or array.
+func looksLikeJSON(b []byte) bool {
+	t := bytes.TrimLeft(b, " \t\r\n")
+	return len(t) > 0 && (t[0] == '{' || t[0] == '[')
+}
+
+func onlySpace(b []byte) bool { return len(bytes.TrimLeft(b, " \t\r\n")) == 0 }
+
 func (cfg Config) query(r *http.Request) inputguard.Report {
-	values, err := url.ParseQuery(r.URL.RawQuery)
-	if err != nil {
-		return inputguard.Report{}
-	}
+	// ParseQuery skips the pairs it cannot parse but returns the others; handlers see the same pairs.
+	values, _ := url.ParseQuery(r.URL.RawQuery)
 	var all inputguard.Report
 	changed := false
 	for name, vs := range values {
@@ -154,11 +190,7 @@ func (cfg Config) headers(r *http.Request) inputguard.Report {
 	return all
 }
 
-func isJSON(r *http.Request) bool {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return false
-	}
+func declaredJSON(r *http.Request) bool {
 	mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
 		return false
@@ -224,6 +256,14 @@ func WriteRejection(w http.ResponseWriter, _ *http.Request, rep inputguard.Repor
 			body.Error.Fields = append(body.Error.Fields, RejectionField{Path: f.Path, Rule: string(f.Rule)})
 		}
 	}
+	writeJSON(w, body)
+}
+
+func writeError(w http.ResponseWriter, code, message string) {
+	writeJSON(w, Rejection{Error: RejectionError{Code: code, Message: message}})
+}
+
+func writeJSON(w http.ResponseWriter, body Rejection) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusBadRequest)

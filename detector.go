@@ -104,7 +104,9 @@ func (g *Guard) detect(in *input, hits []hit) []hit {
 		if !d.contexts.has(in.ctx) {
 			continue
 		}
-		if d.fast != 0 {
+		if g.noGates {
+			// testing: every detector runs
+		} else if d.fast != 0 {
 			if !g.fastValue(in.raw, d.fast) {
 				continue
 			}
@@ -138,6 +140,9 @@ func appendHit(hits []hit, h hit) []hit {
 
 // maybeDirtyValue is the per-value fast path: false ⇒ no enabled rule can match this value in this context.
 func (g *Guard) maybeDirtyValue(raw string, ctx Context) bool {
+	if g.noGates {
+		return true
+	}
 	if g.fastValue(raw, g.valueBits[ctx]) {
 		return true
 	}
@@ -151,6 +156,9 @@ func (g *Guard) maybeDirtyValue(raw string, ctx Context) bool {
 
 // maybeDirtyAny: could an enabled rule match s in some context? Cheaper than classifying the value first.
 func (g *Guard) maybeDirtyAny(s string) bool {
+	if g.noGates {
+		return true
+	}
 	if g.fastValue(s, g.anyBits) {
 		return true
 	}
