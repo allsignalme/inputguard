@@ -2,6 +2,7 @@ package inputguard
 
 import (
 	"net/netip"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
@@ -58,7 +59,7 @@ func mayBeFormula(s string) bool {
 		switch s[i] {
 		case '\t', '\r', '\n':
 			continue
-		case '=', '+', '-', '@', 0xEF:
+		case '=', '+', '-', '@':
 			return true
 		}
 		return false
@@ -66,9 +67,10 @@ func mayBeFormula(s string) bool {
 	return false
 }
 
-// detectFormula flags a value a spreadsheet would evaluate: it starts with = (or + - @ followed by a function call,
-// a DDE pipe or a sheet reference), possibly after tabs or line breaks some importers strip. Plain numbers and
-// phone numbers ("+84 912 345 678", "-12.5") are not flagged.
+// detectFormula flags a value a spreadsheet would run: it starts with = + - or @ (possibly after tabs or line
+// breaks some importers strip) and goes on to call a function (HYPERLINK(, WEBSERVICE(, SUM() or a DDE server
+// (cmd|). That is what formula attacks need; "-20% (Black Friday)", "=== Sale ===", "==" or "+84 912 345 678" are
+// text. The stored value is what gets exported, so it is read as received (an encoded "%3D…" is not a formula).
 func detectFormula(g *Guard, in *input, emit func(RuleID, int)) {
 	if !g.formulaOn.has(in.ctx) {
 		return
@@ -78,26 +80,13 @@ func detectFormula(g *Guard, in *input, emit func(RuleID, int)) {
 	for i < len(s) && (s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
 		i++
 	}
-	r, size := utf8.DecodeRuneInString(s[i:])
-	switch r {
-	case '=', '＝':
+	if i < len(s) && strings.IndexByte("=+-@", s[i]) >= 0 && formulaCallRe.MatchString(s[i+1:]) {
 		emit(RuleFormula, 0)
-	case '+', '-', '@', '＋', '－', '＠':
-		if rest := s[i+size:]; !numericLike(rest) && strings.ContainsAny(rest, "(|!") {
-			emit(RuleFormula, 0)
-		}
 	}
 }
 
-func numericLike(s string) bool {
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if !('0' <= c && c <= '9') && !strings.ContainsRune(" .,()-+/%", rune(c)) {
-			return false
-		}
-	}
-	return true
-}
+// formulaCallRe: a function call (a name right before "(", as spreadsheets require) or a DDE call (name|).
+var formulaCallRe = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_.]*[(|]`)
 
 // --- SSRF ---
 
@@ -269,9 +258,17 @@ func detectRedirect(g *Guard, in *input, emit func(RuleID, int)) {
 
 func (g *Guard) foreignRedirect(u looseURL) bool {
 	if u.scheme != "" && u.scheme != "http" && u.scheme != "https" {
-		return true // mailto:, ftp:, custom schemes (javascript: is RuleScheme)
+		// Another protocol or an app (ftp://, intent://, myapp://…) or a scheme that runs or embeds content.
+		// Text such as "Hotline: 1900 1234" parses as scheme "hotline" but takes the browser nowhere.
+		return u.hasAuthority || redirectSchemes[u.scheme]
 	}
 	return u.hasAuthority && (u.host == "" || !g.redirect.allows(u.host))
+}
+
+// redirectSchemes: schemes a redirect target must not use even without "//".
+var redirectSchemes = map[string]bool{
+	"javascript": true, "vbscript": true, "livescript": true, "data": true, "file": true, "blob": true,
+	"filesystem": true, "intent": true, "about": true, "view-source": true, "jar": true,
 }
 
 // --- URL parsing shared by SSRF and redirect checks ---
@@ -419,26 +416,97 @@ func scriptOf(r rune) uint8 {
 }
 
 // detectMixedScripts flags a word that mixes Latin with Cyrillic, Greek, Armenian or Cherokee letters (or two of
-// those): "pаypal" with a Cyrillic а. Words in one script, in any language, are never flagged.
+// those) when a letter of the minority script is a look-alike of the other: "pаypal" with a Cyrillic а, "Χerox"
+// with a Greek Χ, a Russian word with a Latin "a". Words in one script, in any language, are never flagged, and
+// neither are mixes without a look-alike ("10kΩ", "Ωmega").
 func detectMixedScripts(_ *Guard, in *input, emit func(RuleID, int)) {
 	s := in.decoded()
 	start := -1
-	var mask uint8
 	for i, r := range s {
 		if unicode.IsLetter(r) || unicode.Is(unicode.Mn, r) {
 			if start < 0 {
-				start, mask = i, 0
+				start = i
 			}
-			mask |= scriptOf(r)
 			continue
 		}
-		if start >= 0 && mask&(mask-1) != 0 {
+		if start >= 0 && confusableWord(s[start:i]) {
 			emit(RuleMixedScripts, start)
 			return
 		}
 		start = -1
 	}
-	if start >= 0 && mask&(mask-1) != 0 {
+	if start >= 0 && confusableWord(s[start:]) {
 		emit(RuleMixedScripts, start)
 	}
 }
+
+// confusableWord: the word mixes scripts and a letter of a minority script imitates the majority one.
+func confusableWord(w string) bool {
+	var counts [6]int // indexed by bit position of scriptOf
+	var mask uint8
+	for _, r := range w {
+		if sc := scriptOf(r); sc != 0 {
+			mask |= sc
+			counts[bitIndex(sc)]++
+		}
+	}
+	if mask&(mask-1) == 0 {
+		return false
+	}
+	major := 0 // Latin wins ties
+	for k := 1; k < len(counts); k++ {
+		if counts[k] > counts[major] {
+			major = k
+		}
+	}
+	for _, r := range w {
+		sc := scriptOf(r)
+		if sc == 0 || bitIndex(sc) == major {
+			continue
+		}
+		if (sc == scriptLatin && latinLookalike[r]) || (sc != scriptLatin && homoglyphs[r]) {
+			return true
+		}
+	}
+	return false
+}
+
+func bitIndex(sc uint8) int {
+	n := 0
+	for sc > 1 {
+		sc >>= 1
+		n++
+	}
+	return n
+}
+
+// homoglyphs: Cyrillic, Greek, Armenian and Cherokee letters that look like Latin ones.
+var homoglyphs = func() map[rune]bool {
+	m := map[rune]bool{}
+	for _, r := range []rune{
+		// Cyrillic а е о р с у х і ј ѕ ԁ ԛ ԝ ѵ һ ӏ, А В Е К М Н О Р С Т Х У І Ј Ѕ Ԛ Ԝ
+		0x430, 0x435, 0x43E, 0x440, 0x441, 0x443, 0x445, 0x456, 0x458, 0x455, 0x501, 0x51B, 0x51D, 0x475, 0x4BB,
+		0x4CF, 0x410, 0x412, 0x415, 0x41A, 0x41C, 0x41D, 0x41E, 0x420, 0x421, 0x422, 0x425, 0x423, 0x406, 0x408,
+		0x405, 0x51A, 0x51C,
+		// Greek ο α ν ρ ι κ υ χ γ ϲ ϳ, Α Β Ε Ζ Η Ι Κ Μ Ν Ο Ρ Τ Υ Χ Ϲ
+		0x3BF, 0x3B1, 0x3BD, 0x3C1, 0x3B9, 0x3BA, 0x3C5, 0x3C7, 0x3B3, 0x3F2, 0x3F3, 0x391, 0x392, 0x395, 0x396,
+		0x397, 0x399, 0x39A, 0x39C, 0x39D, 0x39F, 0x3A1, 0x3A4, 0x3A5, 0x3A7, 0x3F9,
+		// Armenian օ ս ց հ ո, Տ Օ
+		0x585, 0x57D, 0x581, 0x570, 0x578, 0x54F, 0x555,
+		// Cherokee Ꭺ Ᏼ Ꮯ Ꭼ Ꮋ Ꮶ Ꮇ Ꮲ Ꮪ Ꭲ Ꮃ Ꮓ Ꭻ Ꮮ Ꭰ Ꮩ Ꭹ Ꮐ Ꮢ
+		0x13AA, 0x13F4, 0x13DF, 0x13AC, 0x13BB, 0x13E6, 0x13B7, 0x13E2, 0x13DA, 0x13A2, 0x13B3, 0x13C3, 0x13AB,
+		0x13DE, 0x13A0, 0x13D9, 0x13A9, 0x13C0, 0x13D2,
+	} {
+		m[r] = true
+	}
+	return m
+}()
+
+// latinLookalike: Latin letters that look like Cyrillic or Greek ones (a Latin "a" in a Russian word).
+var latinLookalike = func() map[rune]bool {
+	m := map[rune]bool{}
+	for _, r := range "acehijkopsxyABCEHIJKMNOPSTXYZ" {
+		m[r] = true
+	}
+	return m
+}()

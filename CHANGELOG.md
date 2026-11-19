@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.1 — 2026-11-19
+
+- `formula_injection` flags only what a spreadsheet would run: a leading `=` `+` `-` `@` followed by a function
+  call (`HYPERLINK(`, `SUM(`) or a DDE call (`cmd|`). Text such as `-20% (Black Friday)` or `=== Sale ===` passes;
+  the value is read as received (fullwidth or percent-encoded signs are not formulas).
+- `mixed_scripts` needs a look-alike letter in the minority script (`pаypal`, `Χerox`); `10kΩ` and `Ωmega` pass.
+- `open_redirect`: a non-HTTP scheme counts when it has an authority (`intent://`, `ftp://`) or runs or embeds
+  content (`data:`, `javascript:`…); `Hotline: 1900 1234` in a redirect field is not a scheme.
+
 ## v0.1.0 — 2026-11-19
 
 First release.

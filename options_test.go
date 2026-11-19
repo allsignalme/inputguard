@@ -33,13 +33,13 @@ func TestKeyTableAndClassifier(t *testing.T) {
 
 func TestFormulaContexts(t *testing.T) {
 	g := MustNew(WithRules(RuleFormula), WithFormulaContexts(CtxText, CtxIdentifier))
-	if out, _ := g.ProcessString("=1+1", CtxIdentifier); out != "" {
+	if out, _ := g.ProcessString("=SUM(1,2)", CtxIdentifier); out != "" {
 		t.Errorf("identifier: %q", out) // identifiers are emptied, never prefixed
 	}
-	if out, _ := g.ProcessString("=1+1", CtxText); out != "'=1+1" {
+	if out, _ := g.ProcessString("=SUM(1,2)", CtxText); out != "'=SUM(1,2)" {
 		t.Errorf("text: %q", out)
 	}
-	if out, _ := g.ProcessString("=1+1", CtxURL); out != "=1+1" {
+	if out, _ := g.ProcessString("=SUM(1,2)", CtxURL); out != "=SUM(1,2)" {
 		t.Errorf("url is not a formula context: %q", out)
 	}
 }
