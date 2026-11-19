@@ -1,0 +1,79 @@
+# Corpus dữ liệu HỢP LỆ — mỗi dòng: "<ctx> <giá trị>" (tách ở dấu cách ĐẦU TIÊN, phần sau giữ nguyên văn).
+# ctx: all       = không được có finding ở MỌI ngữ cảnh (text, URL, strict)
+#      text      = không được có finding ở ngữ cảnh text (URL / strict được phép bắt)
+#      nonstrict = không được có finding ở text và URL (strict được phép bắt)
+
+# --- URL thật ---
+all https://shop.example.com/products/ao-thun-nam?variant=4012345678&utm_source=facebook&utm_medium=cpc&utm_campaign=sale_50%25
+all https://shop.example.com/collections/all?page=2&sort_by=price-ascending
+all https://shop.example.com/search?q=size+%3C+10
+all https://shop.example.com/search?q=%E1%BA%A3o+kho%C3%A1c
+all https://shop.example.com/pages/about#team
+all https://shop.example.com/products/x?fbclid=IwAR1aBcDeFgHiJkLmNoPqRsTuVwXyZ_0123456789
+all https://shop.example.com/products/x?variant=1&_pos=1&_sid=abc&_ss=r
+all https://shop.example.com/products/x?q=%3C3
+all https://shop.example.com/cart/c/Z2NwLXVzLWVhc3QxOjAxSjBGRjQ0?key=abc
+all //cdn.example.com/s/files/1/0001/image.jpg?v=1700000000
+all shop.example.com
+all gid://shopify/Product/1234567890
+
+# --- chữ tự do có ký tự đặc biệt ---
+all Size < 10
+all I <3 NY
+all 5 > 3 and 2 < 4
+all a<b
+all x<y>z
+all a < b > c
+all x -> y
+all <-- back
+all Value <= 5
+all price >= 100 && price <= 200
+all Ultra-fast <24h delivery
+all Kids 3-5 yrs <3 years warranty
+all Áo khoác <M>
+all Giảm giá 50% hôm nay!
+all 50% off — only today
+all 100%
+all 🔥 Flash Sale 🔥 -30%
+all 👨‍👩‍👧 Family pack
+all Summer Sale (2026) – Buy 1 Get 1
+all "Best seller" product
+all It's a 'great' deal
+all He said "on demand"
+all Ref: ORDER#1001; Note: giao trước 5h
+all Tom &amp; Jerry
+all Tom & Jerry
+all C:\Users\shop\file.csv
+all SELECT * FROM products
+all data: 2026-10-30
+all metadata: x
+all javascripts are great
+all Learn Java: Script edition
+
+# --- dạng key=value / JSON trong giá trị ---
+all online=1
+all one=two&three=four
+all only=yes
+all the onion=good
+all Lemon=fresh
+all {"a":1,"b":[1,2,"x"]}
+all [{"id":"123","quantity":2}]
+all ^/admin/(foo|bar)$
+
+# --- định danh / hash ---
+all fb.1.1700000000000.AbCdEfGhIjKl
+all fb.1.1700000000000.IwAR1aBcDeFg
+all a3f1c2e4b5d6978899aabbccddeeff00112233445566778899aabbccddeeff00
+all +84 912 345 678
+all john.doe+tag@example.com
+all c1-ab12cd34ef56
+all 9007199254740993
+
+# --- chỉ hợp lệ ở text (URL/strict được phép bắt) ---
+text JavaScript: The Good Parts
+text javascript: a beginner guide
+
+# --- hợp lệ ở text + URL, strict được phép bắt (biểu thức template) ---
+nonstrict {{ product.title }}
+nonstrict Use ${price} in template
+nonstrict Hello {{name}}

