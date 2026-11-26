@@ -12,6 +12,7 @@ export function goRe(src: string): RegExp {
   src = src.split("[\\s\\S]").join("[^]");
   let out = "";
   let inClass = false;
+  let groups = 0;
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     if (c === "\\") {
@@ -47,18 +48,22 @@ export function goRe(src: string): RegExp {
       if (src[i + 1] === "]") throw new Error("goRe: ] first in a class");
       continue;
     }
+    if (c === "(" && src[i + 1] !== "?") groups++;
     out += c === "." ? "[^\\n]" : c;
   }
-  // d: match indices, for the start of group 1.
-  return new RegExp(out, "d");
+  // matchIndex finds group 1 from where the match ends (no "d" flag: it is missing in older browsers), so a
+  // capturing group must close the pattern.
+  if (groups > 1 || (groups === 1 && !src.endsWith(")"))) throw new Error("goRe: group 1 must end the pattern");
+  return new RegExp(out);
 }
 
-type IndexedMatch = RegExpExecArray & { indices?: Array<[number, number] | undefined> };
-
-/** matchIndex: the start of group 1 when it took part, else of the whole match; -1 when nothing matches. */
+/**
+ * matchIndex: the start of group 1 when it took part, else of the whole match; -1 when nothing matches. Group 1,
+ * when there is one, ends the pattern (goRe checks it), so it ends where the match ends.
+ */
 export function matchIndex(re: RegExp, s: string): number {
-  const m = re.exec(s) as IndexedMatch | null;
+  const m = re.exec(s);
   if (m === null) return -1;
-  const g1 = m.indices?.[1];
-  return g1 !== undefined ? g1[0] : m.index;
+  const g1 = m[1];
+  return g1 !== undefined ? m.index + m[0].length - g1.length : m.index;
 }

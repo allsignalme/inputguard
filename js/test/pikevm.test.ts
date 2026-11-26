@@ -64,7 +64,8 @@ describe("pikevm", () => {
       ["[\\s\\S]*?z", "a\nz", 0],
       ["\\x41\\.", "A.", 0],
       ["[a\\-z]", "-", 0],
-      ["(a)|b", "b", 0],
+      ["b|(a)", "b", 0],
+      ["b|(a)", "xa", 1],
     ];
     for (const [src, s, want] of cases) {
       const m = exec(compile(src), s);
@@ -73,6 +74,7 @@ describe("pikevm", () => {
     }
     expect(() => compile("a\\q")).toThrow();
     expect(() => compile("(a")).toThrow();
+    expect(() => safeRe("(a)b")).toThrow(/group 1/);
     expect(() => compile("[a")).toThrow();
   });
 
