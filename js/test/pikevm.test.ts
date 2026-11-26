@@ -75,6 +75,10 @@ describe("pikevm", () => {
     expect(() => compile("a\\q")).toThrow();
     expect(() => compile("(a")).toThrow();
     expect(() => safeRe("(a)b")).toThrow(/group 1/);
+    expect(() => safeRe("x(a)(?:b)")).toThrow(/group 1/);
+    expect(() => safeRe("(a)(b)")).toThrow(/group 1/);
+    expect(() => safeRe("x(?:a|(b))")).toThrow(/group 1/); // the group must close at the last character
+    expect(safeRe("x(a|b)").native.source).toBe("x(a|b)");
     expect(() => compile("[a")).toThrow();
   });
 

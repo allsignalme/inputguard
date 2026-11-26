@@ -40,7 +40,8 @@ It runs in browsers, web workers (no DOM needed) and Node 18 or later, and has n
 | `@allsignalme/inputguard/balanced` | the balanced profile only | ≈ 23 KB |
 
 The balanced build gives the same results as the full one for a balanced guard. It is meant for browsers, such as a
-tracking pixel cleaning what it sends. Asking it for a strict rule, `redirectHosts` or `ssrfAllow` throws.
+tracking pixel cleaning what it sends. Asking it for a strict rule, `redirectHosts` or `ssrfAllow` throws. Reject
+mode defaults to the strict profile, so with this build write `{ mode: "reject", profile: "balanced" }`.
 
 ```ts
 import { Guard } from "@allsignalme/inputguard/balanced";
@@ -105,6 +106,8 @@ hostile values of up to 400 KB through every rule: time grows linearly with the 
 - The raw JSON scanner (`ProcessJSON`, `CheckJSON`, `MaybeDirty`): values come from `JSON.parse`. So there is no
   `duplicate_key` (`JSON.parse` keeps the last value), no `invalidJSON` flag, and a string holding JSON is
   inspected as text (Go with `WithEmbeddedJSON(false)`).
+- Values that contain themselves, and `limits.maxDepth` below 0 (no limit) on very deep values: the walk is
+  recursive, so keep a depth limit (the default is 32).
 - `WithKeyPolicy`: turn `key_operator` and `key_invalid` on with `rules` or `categories` instead.
 - Custom detectors (`WithDetector`), `CleanLeaves`, the `httpguard` adapter and `TopicFilter`.
 - The NFKC mapping of non-ASCII host names (ssrf and open_redirect rules) uses the JavaScript engine's

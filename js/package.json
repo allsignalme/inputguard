@@ -1,6 +1,6 @@
 {
   "name": "@allsignalme/inputguard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Detect and clean malicious content (XSS, injection, Unicode abuse) in input strings and JSON values. TypeScript port of github.com/allsignalme/inputguard, same results byte for byte.",
   "license": "MIT",
   "type": "module",
@@ -13,6 +13,13 @@
     "./balanced": {
       "types": "./dist/balanced.d.ts",
       "default": "./dist/balanced.js"
+    }
+  },
+  "typesVersions": {
+    "*": {
+      "balanced": [
+        "./dist/balanced.d.ts"
+      ]
     }
   },
   "main": "./dist/index.js",

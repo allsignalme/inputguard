@@ -227,3 +227,41 @@ describe("rule table", () => {
     expect(lookupRule("nope")).toBeUndefined();
   });
 });
+
+describe("deep and cyclic values, byte limits", () => {
+  it("copies a value only down to the depth limit", () => {
+    const g = new Guard();
+    let deep: unknown = "<script>";
+    for (let i = 0; i < 10_000; i++) deep = [deep];
+    const v = { s: "<b>x</b>", deep };
+    const { value, report } = g.processValue(v);
+    expect(report.limitExceeded).toBe(true);
+    let node = (value as { deep: unknown }).deep;
+    let depth = 1;
+    while (Array.isArray(node)) {
+      node = node[0];
+      depth++;
+    }
+    expect(node).toBeNull(); // the branch past maxDepth (32) is pruned
+    expect(depth).toBe(32);
+    expect((value as { s: string }).s).toBe("");
+    expect(v.deep).toBe(deep); // the input is untouched
+  });
+
+  it("a value that contains itself", () => {
+    const o: Record<string, unknown> = { s: "<b>x</b>" };
+    o.self = o;
+    const { value, report } = new Guard().processValue(o);
+    expect(report.limitExceeded).toBe(true);
+    expect((value as { s: string }).s).toBe("");
+    expect(o.s).toBe("<b>x</b>");
+  });
+
+  it("limits count UTF-8 bytes, as in Go", () => {
+    const g = new Guard({ limits: { maxStringBytes: 8 } });
+    expect(g.processString("áááá").report.limitExceeded).toBe(false); // 8 bytes
+    expect(g.processString("ááááá").report.limitExceeded).toBe(true); // 10 bytes
+    expect(g.processString(cp(0x1f525, 0x1f525)).report.limitExceeded).toBe(false); // 8 bytes
+    expect(g.processString(cp(0x1f525, 0x1f525) + "a").report.limitExceeded).toBe(true);
+  });
+});

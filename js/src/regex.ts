@@ -13,6 +13,8 @@ export function goRe(src: string): RegExp {
   let out = "";
   let inClass = false;
   let groups = 0;
+  let groupEnd = -1; // index in src where the capturing group closes
+  const open: boolean[] = []; // capturing?
   for (let i = 0; i < src.length; i++) {
     const c = src[i];
     if (c === "\\") {
@@ -48,12 +50,18 @@ export function goRe(src: string): RegExp {
       if (src[i + 1] === "]") throw new Error("goRe: ] first in a class");
       continue;
     }
-    if (c === "(" && src[i + 1] !== "?") groups++;
+    if (c === "(") {
+      const capturing = src[i + 1] !== "?";
+      if (capturing) groups++;
+      open.push(capturing);
+    } else if (c === ")" && open.pop() === true) {
+      groupEnd = i;
+    }
     out += c === "." ? "[^\\n]" : c;
   }
   // matchIndex finds group 1 from where the match ends (no "d" flag: it is missing in older browsers), so a
   // capturing group must close the pattern.
-  if (groups > 1 || (groups === 1 && !src.endsWith(")"))) throw new Error("goRe: group 1 must end the pattern");
+  if (groups > 1 || (groups === 1 && groupEnd !== src.length - 1)) throw new Error("goRe: group 1 must end the pattern");
   return new RegExp(out);
 }
 

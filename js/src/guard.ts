@@ -72,7 +72,7 @@ export class GuardBase {
     const dry = new Walker(this.#e, true);
     dry.walk(v, "", 0);
     if (dry.rep.report.rejected || !dry.changed) return { value: v, report: dry.finish(false) };
-    const copy = cloneValue(v);
+    const copy = cloneValue(v, this.#e.maxDepth);
     const w = new Walker(this.#e, false);
     const [nv, replaced] = w.walk(copy, "", 0);
     return { value: (replaced ? nv : copy) as T, report: w.finish(w.changed) };

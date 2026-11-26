@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- TypeScript port in `js/` (npm package `@allsignalme/inputguard`), checked against the Go engine: the corpus
+- TypeScript port in `js/` (npm 0.1.0 and 0.1.1, tags `js-v*`) (npm package `@allsignalme/inputguard`), checked against the Go engine: the corpus
   output is recorded in `testdata/golden` (`go test -run TestGolden -update`), and the tables the port needs (HTML
   entities, Unicode ranges) are generated from Go (`TestJSTables`).
 

@@ -806,12 +806,17 @@ function setOwn(o: Record<string, unknown>, k: string, v: unknown): void {
   Object.defineProperty(o, k, { value: v, writable: true, enumerable: true, configurable: true });
 }
 
-/** cloneValue copies plain objects and arrays deeply; other values are shared. */
-export function cloneValue<T>(v: T): T {
-  if (Array.isArray(v)) return v.map(cloneValue) as T;
+/**
+ * cloneValue copies the plain objects and arrays the walker may change: those less than depth levels deep. Deeper
+ * ones are shared (the walker never enters them; it replaces them in their cloned parent), so a value nested
+ * thousands of levels deep, or one that contains itself, is copied only down to the depth limit.
+ */
+export function cloneValue<T>(v: T, depth: number): T {
+  if (depth <= 0) return v;
+  if (Array.isArray(v)) return v.map((x) => cloneValue(x, depth - 1)) as T;
   if (isPlainObject(v)) {
     const o = Object.create(Object.getPrototypeOf(v)) as Record<string, unknown>;
-    for (const k of Object.keys(v)) setOwn(o, k, cloneValue(v[k]));
+    for (const k of Object.keys(v)) setOwn(o, k, cloneValue(v[k], depth - 1));
     return o as T;
   }
   return v;
