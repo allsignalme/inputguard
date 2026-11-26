@@ -1,0 +1,59 @@
+{
+  "name": "@allsignalme/inputguard",
+  "version": "0.1.0",
+  "description": "Detect and clean malicious content (XSS, injection, Unicode abuse) in input strings and JSON values. TypeScript port of github.com/allsignalme/inputguard, same results byte for byte.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./balanced": {
+      "types": "./dist/balanced.d.ts",
+      "default": "./dist/balanced.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/allsignalme/inputguard.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/allsignalme/inputguard/tree/main/js#readme",
+  "keywords": [
+    "xss",
+    "sanitize",
+    "input-validation",
+    "security",
+    "injection",
+    "unicode"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage",
+    "size": "node scripts/size.mjs",
+    "check": "npm run typecheck && npm run coverage && npm run build && npm run size",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.11",
+    "@vitest/coverage-v8": "5.1.2",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.2"
+  }
+}
