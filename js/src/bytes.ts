@@ -246,7 +246,8 @@ export function trimRightRunes(s: string, f: (r: number) => boolean): string {
 /** indexAny is strings.IndexAny for an ASCII set. */
 export function indexAny(s: string, chars: string): number {
   for (let i = 0; i < s.length; i++) {
-    if (chars.indexOf(s[i]) >= 0) return i;
+    const c = s.charCodeAt(i);
+    for (let j = 0; j < chars.length; j++) if (c === chars.charCodeAt(j)) return i;
   }
   return -1;
 }

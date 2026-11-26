@@ -20,6 +20,7 @@ import { internalAddr, parseHostIP } from "./ip.js";
 import { normalize } from "./norm.js";
 import { isPathSep, mayBeEncoded } from "./prefilter.js";
 import { CTX_REDIRECT, maskHas, maskOf, URL_CONTEXTS } from "./rule.js";
+import { matchIndexSafe, safeRe } from "./saferegex.js";
 import { splitScheme } from "./url.js";
 import {
   isArmenian,
@@ -60,10 +61,9 @@ function mayBeFormula(s: string): boolean {
 // spelled out here as their UTF-8 bytes.
 const K = "(?:k|\\xe2\\x84\\xaa)";
 const S = "(?:s|\\xc5\\xbf)";
-const formulaCallRe = new RegExp(
+const formulaCallRe = safeRe(
   "\\b(?:hyperlin" + K + "|web" + S + "ervice|importxml|importdata|importhtml|importfeed|importrange|image|filterxml|" +
-    "call|regi" + S + "ter(?:\\.id)?|exec|rtd|dde)\\(|(?:[a-z0-9_.]|\\xc5\\xbf|\\xe2\\x84\\xaa)+\\|[\\t\\n\\f\\r ]*'|" +
-    "\\bcmd[\\t\\n\\f\\r ]*\\|",
+    "call|regi" + S + "ter(?:\\.id)?|exec|rtd|dde)\\(|(?:[a-z0-9_.]|\\xc5\\xbf|\\xe2\\x84\\xaa)+\\|\\s*'|\\bcmd\\s*\\|",
 );
 
 // detectFormula flags a value a spreadsheet would run to reach outside: it starts with = + - or @ (possibly after
@@ -73,7 +73,7 @@ function detectFormula(env: DetectorEnv, input: Input, emit: Emit): void {
   const s = input.raw;
   let i = 0;
   while (i < s.length && (s.charCodeAt(i) === 0x09 || s.charCodeAt(i) === 0x0d || s.charCodeAt(i) === 0x0a)) i++;
-  if (i < s.length && "=+-@".indexOf(s[i]) >= 0 && formulaCallRe.test(asciiLower(s.slice(i + 1)))) emit("formula_injection", 0);
+  if (i < s.length && "=+-@".indexOf(s[i]) >= 0 && matchIndexSafe(formulaCallRe, asciiLower(s.slice(i + 1))) >= 0) emit("formula_injection", 0);
 }
 
 // --- SSRF ---

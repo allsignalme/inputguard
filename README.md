@@ -207,6 +207,12 @@ engine did not check.
 - `httpguard` inspects JSON bodies only (not forms or multipart). A body that is a bare JSON string is inspected
   only when declared as JSON.
 
+## JavaScript and TypeScript
+
+[`js/`](js/) holds a TypeScript port published on npm as `@allsignalme/inputguard`. It gives the same results as
+this module on the shared corpus (`testdata/golden`, written by `go test -run TestGolden -update`), and has a
+smaller build with the balanced rules only for browsers. See [js/README.md](js/README.md).
+
 ## License
 
 MIT

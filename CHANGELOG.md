@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- TypeScript port in `js/` (npm package `@allsignalme/inputguard`), checked against the Go engine: the corpus
+  output is recorded in `testdata/golden` (`go test -run TestGolden -update`), and the tables the port needs (HTML
+  entities, Unicode ranges) are generated from Go (`TestJSTables`).
+
 ## v0.1.3 — 2026-11-19
 
 - `formula_injection`: the function name must touch its parenthesis, as spreadsheets require: `- Image (front view)`,

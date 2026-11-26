@@ -1,7 +1,7 @@
 GO_ENV ?= GOMAXPROCS=2 GOMEMLIMIT=1500MiB
 FUZZTIME ?= 30s
 
-.PHONY: test lint fuzz bench cover check
+.PHONY: test lint fuzz bench cover check golden js-check
 
 test:
 	$(GO_ENV) go test -count=1 ./...
@@ -24,3 +24,10 @@ cover:
 	go tool cover -func=cover.out | tail -1
 
 check: lint test
+
+# The JavaScript port: regenerate the golden output and the tables it reads, then check it.
+golden:
+	go test -count=1 -run 'TestGolden|TestJSTables' -update .
+
+js-check:
+	cd js && npm ci && npm run check

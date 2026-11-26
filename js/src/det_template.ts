@@ -4,16 +4,17 @@ import { containsAny } from "./bytes.js";
 import type { DetectorDef, DetectorEnv, Emit, Input } from "./detector.js";
 import { ALL_INSPECTED, CLEAN_CUT } from "./detector.js";
 import { containsAnyFold, mayBeEncoded } from "./prefilter.js";
-import { goRe, matchIndex } from "./regex.js";
+import type { SafeRe } from "./saferegex.js";
+import { matchIndexSafe, nativeRe, safeRe } from "./saferegex.js";
 
-const templateRe = goRe("\\{\\{[\\s\\S]*?\\}\\}|\\{%[\\s\\S]*?%\\}|\\$\\{[^}]*\\}|<%[\\s\\S]*?%>");
-const jsCallRe = goRe(
+const templateRe = safeRe("\\{\\{[\\s\\S]*?\\}\\}|\\{%[\\s\\S]*?%\\}|\\$\\{[^}]*\\}|<%[\\s\\S]*?%>");
+const jsCallRe = nativeRe(
   "\\b(?:eval|atob|btoa|settimeout|setinterval|fromcharcode|unescape|decodeuricomponent|execscript)\\s*\\(" +
     "|\\bnew\\s+function\\b|\\bimport\\s*\\(|\\.\\s*(?:inner|outer)html\\b" +
     "|\\b(?:document|window|globalthis)\\s*\\.\\s*(?:cookie|write|writeln|location|domain|open|eval|body|head|" +
     "createelement|getelementbyid|queryselector)",
 );
-const jsBreakoutRe = goRe("[\"'`]\\s*[-+;,)\\]}|&*/%^]\\s*[a-z_$][\\w$.]*\\s*\\(");
+const jsBreakoutRe = nativeRe("[\"'`]\\s*[-+;,)\\]}|&*/%^]\\s*[a-z_$][\\w$.]*\\s*\\(");
 
 const JS_CALL_NAMES = [
   "eval", "atob", "btoa", "settimeout", "setinterval", "fromcharcode", "unescape", "decodeuricomponent", "execscript",
@@ -30,16 +31,16 @@ function jsCallGate(f: string, paren: boolean): boolean {
 function detectTemplate(_env: DetectorEnv, input: Input, emit: Emit): void {
   const f = input.folded();
   if (f.includes("{{") || f.includes("{%") || f.includes("${") || f.includes("<%")) {
-    const idx = matchIndex(templateRe, f);
+    const idx = matchIndexSafe(templateRe, f);
     if (idx >= 0) emit("template", idx);
   }
   const paren = f.indexOf("(") >= 0;
   if (jsCallGate(f, paren)) {
-    const idx = matchIndex(jsCallRe, f);
+    const idx = matchIndexSafe(jsCallRe, f);
     if (idx >= 0) emit("js_call", idx);
   }
   if (paren && containsAny(f, "\"'`")) {
-    const idx = matchIndex(jsBreakoutRe, f);
+    const idx = matchIndexSafe(jsBreakoutRe, f);
     if (idx >= 0) emit("js_breakout", idx);
   }
 }

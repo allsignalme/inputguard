@@ -4,6 +4,7 @@
 import { ALL_DETECTORS } from "./detectors.js";
 import type { GuardOptions } from "./engine.js";
 import { GuardBase } from "./guard.js";
+import { hostRules } from "./hosts.js";
 
 /**
  * Guard inspects and cleans input. Build it once and share it: it is immutable. With no options it cleans
@@ -11,7 +12,7 @@ import { GuardBase } from "./guard.js";
  */
 export class Guard extends GuardBase {
   constructor(options?: GuardOptions) {
-    super(ALL_DETECTORS, options);
+    super(ALL_DETECTORS, options, hostRules);
   }
 }
 

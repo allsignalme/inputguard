@@ -215,9 +215,21 @@ let entities2: Map<string, [number, number]> | null = null;
 function entityMaps(): [Map<string, number>, Map<string, [number, number]>] {
   if (entities === null || entities2 === null) {
     entities = new Map();
-    for (const e of ENTITY_DATA.split("|")) {
-      const c = e.lastIndexOf(":");
-      entities.set(e.slice(0, c), parseInt(e.slice(c + 1), 16));
+    let cp = 0;
+    for (const group of ENTITY_DATA.split("|")) {
+      const c = group.indexOf(":");
+      cp += parseInt(group.slice(0, c), 36);
+      for (const name of group.slice(c + 1).split(",")) {
+        const last = name[name.length - 1];
+        if (last === "!") {
+          entities.set(name.slice(0, -1), cp);
+          entities.set(name.slice(0, -1) + ";", cp);
+        } else if (last === "~") {
+          entities.set(name.slice(0, -1), cp);
+        } else {
+          entities.set(name + ";", cp);
+        }
+      }
     }
     entities2 = new Map();
     for (const e of ENTITY2_DATA.split("|")) {

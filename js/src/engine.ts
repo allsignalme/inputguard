@@ -19,7 +19,6 @@ import { isNoSQLOperatorKey } from "./det_injection_keys.js";
 import { stripUnicodeIssues, UNI_BIDI, UNI_CONTROL, UNI_INVALID, UNI_INVISIBLE } from "./det_unicode.js";
 import type { Finding, PathSeg, Report } from "./finding.js";
 import { emptyReport, formatPath, KEY_PATH_MARKER, sortFindings } from "./finding.js";
-import { HostMatcher, SSRFAllowList } from "./hosts.js";
 import { normalize } from "./norm.js";
 import type { Pattern } from "./path.js";
 import { compilePattern, matchAny, matchPattern } from "./path.js";
@@ -134,6 +133,21 @@ interface ActiveDetector {
   def: DetectorDef;
 }
 
+/** The host lists of the URL rules (strict profile), built by hosts.ts in the full build. */
+export interface HostRules {
+  allowsRedirectHost(host: string): boolean;
+  allowsSSRFHost(host: string): boolean;
+  allowsSSRFAddr(addr: IPAddr): boolean;
+}
+
+export type HostRulesFactory = (redirectHosts: readonly string[], ssrfAllow: readonly string[]) => HostRules;
+
+const NO_HOSTS: HostRules = {
+  allowsRedirectHost: () => false,
+  allowsSSRFHost: () => false,
+  allowsSSRFAddr: () => false,
+};
+
 function pick(v: number | undefined, def: number): number {
   if (v === undefined || v === 0) return def;
   return v < 0 ? NO_LIMIT : v;
@@ -155,8 +169,7 @@ export class Engine implements DetectorEnv {
   readonly maxStringBytes: number;
   readonly maxFindings: number;
   readonly limitAct: number;
-  private readonly redirect: HostMatcher;
-  private readonly ssrfAllow: SSRFAllowList;
+  private readonly hosts: HostRules;
   private readonly detectors: ActiveDetector[] = [];
   private readonly valueBits: number[] = new Array<number>(CTX_COUNT).fill(0);
   private anyBits = 0;
@@ -169,7 +182,7 @@ export class Engine implements DetectorEnv {
   readonly mongoInvalid: boolean;
   readonly observer: ((r: Report) => void) | undefined;
 
-  constructor(builtins: readonly DetectorDef[], opts: GuardOptions = {}) {
+  constructor(builtins: readonly DetectorDef[], opts: GuardOptions = {}, hostRules: HostRulesFactory | null = null) {
     const enable = new Map<RuleID, boolean>();
     const actions = new Map<RuleID, number>();
     const sevActions = new Map<Severity, number>();
@@ -261,8 +274,10 @@ export class Engine implements DetectorEnv {
     const onExceed = actionNumber(l.onExceed ?? "default");
     this.limitAct = onExceed === A_CLEAN || onExceed === A_REJECT || onExceed === A_REPORT ? onExceed : def;
 
-    this.redirect = new HostMatcher(opts.redirectHosts ?? []);
-    this.ssrfAllow = new SSRFAllowList(opts.ssrfAllow ?? []);
+    if (hostRules === null && ((opts.redirectHosts ?? []).length > 0 || (opts.ssrfAllow ?? []).length > 0)) {
+      throw new Error("inputguard: redirectHosts and ssrfAllow are not in this build");
+    }
+    this.hosts = hostRules === null ? NO_HOSTS : hostRules(opts.redirectHosts ?? [], opts.ssrfAllow ?? []);
     this.formulaOn = opts.formulaContexts !== undefined && opts.formulaContexts.length > 0
       ? maskOf(...opts.formulaContexts.map(ctxNumber))
       : maskOf(CTX_TEXT);
@@ -301,15 +316,15 @@ export class Engine implements DetectorEnv {
   // --- DetectorEnv ---
 
   allowsRedirectHost(host: string): boolean {
-    return this.redirect.allows(host);
+    return this.hosts.allowsRedirectHost(host);
   }
 
   allowsSSRFHost(host: string): boolean {
-    return this.ssrfAllow.allowsHost(host);
+    return this.hosts.allowsSSRFHost(host);
   }
 
   allowsSSRFAddr(addr: IPAddr): boolean {
-    return this.ssrfAllow.allowsAddr(addr);
+    return this.hosts.allowsSSRFAddr(addr);
   }
 
   // --- fast path ---

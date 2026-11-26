@@ -1,6 +1,7 @@
 // Allowed redirect hosts and the SSRF allow list. Host names are byte strings (lowercase ASCII in practice).
 
 import { containsAny, toBytes } from "./bytes.js";
+import type { HostRules } from "./engine.js";
 import type { Addr, Prefix } from "./ip.js";
 import { parseAddr, parsePrefix, prefixContains, prefixOf, unmap } from "./ip.js";
 
@@ -68,4 +69,15 @@ export class SSRFAllowList {
     for (const p of this.prefixes) if (prefixContains(p, u) || prefixContains(p, a)) return true;
     return false;
   }
+}
+
+/** hostRules builds the host lists of the URL rules. */
+export function hostRules(redirectHosts: readonly string[], ssrfAllow: readonly string[]): HostRules {
+  const redirect = new HostMatcher(redirectHosts);
+  const ssrf = new SSRFAllowList(ssrfAllow);
+  return {
+    allowsRedirectHost: (host) => redirect.allows(host),
+    allowsSSRFHost: (host) => ssrf.allowsHost(host),
+    allowsSSRFAddr: (addr) => ssrf.allowsAddr(addr),
+  };
 }

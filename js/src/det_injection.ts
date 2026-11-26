@@ -6,7 +6,8 @@ import type { DetectorDef, Emit, Input } from "./detector.js";
 import { ALL_INSPECTED, CLEAN_CHARS, CLEAN_CUT } from "./detector.js";
 import { containsAnyFold, FB_CRLF, FB_CRLF_ENC, mayBeEncoded } from "./prefilter.js";
 import { MONGO_OPS } from "./det_injection_keys.js";
-import { goRe, matchIndex } from "./regex.js";
+import type { SafeRe } from "./saferegex.js";
+import { matchIndexSafe, nativeRe, safeRe } from "./saferegex.js";
 import { CTX_HEADER, CTX_IDENTIFIER, CTX_PATH, CTX_REDIRECT, CTX_TEXT, CTX_URL, maskOf, URL_CONTEXTS } from "./rule.js";
 
 const SQL_CONTEXTS = maskOf(CTX_TEXT, CTX_URL, CTX_REDIRECT, CTX_IDENTIFIER, CTX_PATH, CTX_HEADER);
@@ -19,7 +20,7 @@ const BT = "`";
 
 interface Family {
   gate: (f: string, quote: boolean) => boolean;
-  re: RegExp;
+  re: SafeRe;
 }
 
 const SQL_CATALOG = [
@@ -34,7 +35,7 @@ const SQL_FAMILIES: Family[] = [
     gate: (f, quote) =>
       (quote || f.indexOf(")") >= 0) &&
       (hasWord(f, "or") || hasWord(f, "and") || hasWord(f, "xor") || f.includes("||") || f.includes("&&")),
-    re: goRe(
+    re: nativeRe(
       "(?:" + Q + String.raw`|\))\s*(?:(?:or|and|xor)\b|\|\||&&)\s*(?:not\s+)?\(*\s*(?:` +
         String.raw`(?:'[^']*'|"[^"]*"|\d+(?:\.\d+)?|true|false|null)\s*` +
         String.raw`(?:=|<>|!=|<=?|>=?|\blike\b|\bis\b|\bin\b|\bbetween\b|\bregexp\b|\brlike\b)\s*` +
@@ -46,17 +47,17 @@ const SQL_FAMILIES: Family[] = [
   {
     // Numeric tautology: 1 or 1=1.
     gate: (f) => hasWord(f, "or") && f.indexOf("=") >= 0,
-    re: goRe(String.raw`\b\d+\s+or\s+\d+\s*=\s*\d+`),
+    re: nativeRe(String.raw`\b\d+\s+or\s+\d+\s*=\s*\d+`),
   },
   {
     // A comment right after a quote that closes a value: admin'--, admin' -- (at the end), admin'#, 1')--, x'/*.
     gate: (f, quote) => quote && (f.includes("--") || f.indexOf("#") >= 0 || f.includes("/*")),
-    re: goRe(String.raw`(?:^|[\w)])` + Q + String.raw`\)?(?:--|\s*;\s*--|\s*--\s*$|\s*#\s*$|\s*/\*)`),
+    re: nativeRe(String.raw`(?:^|[\w)])` + Q + String.raw`\)?(?:--|\s*;\s*--|\s*--\s*$|\s*#\s*$|\s*/\*)`),
   },
   {
     // UNION [ALL] SELECT followed by what a select list starts with.
     gate: (f) => f.includes("union") && f.includes("select"),
-    re: goRe(
+    re: safeRe(
       String.raw`\bunion\b(?:\s|/\*.*?\*/|\()+(?:(?:all|distinct)\b(?:\s|/\*.*?\*/)*)?select\b` +
         String.raw`(?:\s|/\*.*?\*/|\()+(?:\*|null\b|\d|@|'|"|[\w.]+\s*(?:,|\(|\bfrom\b))`,
     ),
@@ -64,7 +65,7 @@ const SQL_FAMILIES: Family[] = [
   {
     // Stacked queries.
     gate: (f) => stackedKeyword(f),
-    re: goRe(
+    re: safeRe(
       String.raw`;\s*(?:drop\s+(?:table|database|schema|view|index|user|function|procedure)\b|` +
         String.raw`truncate\s+table\b|alter\s+(?:table|database|user)\b|exec(?:ute)?\s*(?:xp_|sp_|master\.|\()|` +
         String.raw`shutdown\s*(?:;|--|$|with\b)|declare\s+@|create\s+(?:table|user|database|function|procedure|trigger|login)\b|` +
@@ -76,7 +77,7 @@ const SQL_FAMILIES: Family[] = [
   {
     // Time-based blind injection; catalog and dangerous-function access.
     gate: (f) => SQL_CATALOG.some((w) => f.includes(w)),
-    re: goRe(
+    re: nativeRe(
       [
         String.raw`\b(?:sleep|pg_sleep)\s*\(\s*\d+(?:\.\d+)?\s*\)`,
         String.raw`\bbenchmark\s*\(\s*\d+\s*,`,
@@ -142,7 +143,7 @@ function detectSQL(_env: unknown, input: Input, emit: Emit): void {
   let best = -1;
   for (const fam of SQL_FAMILIES) {
     if (!fam.gate(f, quote)) continue;
-    const i = matchIndex(fam.re, f);
+    const i = matchIndexSafe(fam.re, f);
     if (i >= 0 && (best < 0 || i < best)) best = i;
   }
   if (best >= 0) emit("sql_injection", best);
@@ -150,16 +151,16 @@ function detectSQL(_env: unknown, input: Input, emit: Emit): void {
 
 // --- NoSQL ---
 
-const nosqlRe = goRe(String.raw`(?:\[\s*\$|\{\s*['"]?\s*\$)(?:` + MONGO_OPS + String.raw`)\b|\$where\b`);
+const nosqlRe = nativeRe(String.raw`(?:\[\s*\$|\{\s*['"]?\s*\$)(?:` + MONGO_OPS + String.raw`)\b|\$where\b`);
 
 function detectNoSQL(_env: unknown, input: Input, emit: Emit): void {
-  const i = matchIndex(nosqlRe, input.folded());
+  const i = matchIndexSafe(nosqlRe, input.folded());
   if (i >= 0) emit("nosql_operator", i);
 }
 
 // --- Shell commands ---
 
-const commandRe = goRe(
+const commandRe = safeRe(
   "(?:[;&|\\n`]|\\$\\()\\s*(?:" +
     [
       String.raw`rm\s+-[a-z]*[rf]`, String.raw`curl\s+(?:-|https?:|ftp:|file:)`, String.raw`wget\s+(?:-|https?:|ftp:)`,
@@ -177,7 +178,7 @@ const commandRe = goRe(
 );
 
 function detectCommand(_env: unknown, input: Input, emit: Emit): void {
-  const i = matchIndex(commandRe, input.folded());
+  const i = matchIndexSafe(commandRe, input.folded());
   if (i >= 0) emit("command", i);
 }
 

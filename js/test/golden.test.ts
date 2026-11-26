@@ -9,6 +9,7 @@ import { defaultClassifier } from "../src/context.js";
 import { ALL_DETECTORS } from "../src/detectors.js";
 import type { GuardOptions } from "../src/engine.js";
 import { Engine } from "../src/engine.js";
+import { hostRules } from "../src/hosts.js";
 import { Guard } from "../src/index.js";
 import { CONTEXT_NAMES, ctxNumber, RULE_TABLE } from "../src/rule.js";
 import type { Context } from "../src/rule.js";
@@ -78,7 +79,7 @@ describe("golden: strings", () => {
 
   for (const cfg of g.configs) {
     it(`${cfg}: every corpus value in every context`, () => {
-      const e = new Engine(ALL_DETECTORS, GOLDEN_CONFIGS[cfg]);
+      const e = new Engine(ALL_DETECTORS, GOLDEN_CONFIGS[cfg], hostRules);
       const bad: string[] = [];
       inputs.forEach((input, i) => {
         for (const ctx of g.contexts) {

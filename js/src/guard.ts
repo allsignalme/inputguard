@@ -2,7 +2,7 @@
 
 import { fromBytes, toBytes } from "./bytes.js";
 import type { DetectorDef } from "./detector.js";
-import type { Action, GuardOptions, Mode } from "./engine.js";
+import type { Action, GuardOptions, HostRulesFactory, Mode } from "./engine.js";
 import { cloneValue, Engine, Walker } from "./engine.js";
 import type { Report } from "./finding.js";
 import type { Context, Profile, RuleID } from "./rule.js";
@@ -17,8 +17,8 @@ export interface Processed<T> {
 export class GuardBase {
   readonly #e: Engine;
 
-  protected constructor(detectors: readonly DetectorDef[], options?: GuardOptions) {
-    this.#e = new Engine(detectors, options);
+  protected constructor(detectors: readonly DetectorDef[], options?: GuardOptions, hosts: HostRulesFactory | null = null) {
+    this.#e = new Engine(detectors, options, hosts);
   }
 
   get mode(): Mode {

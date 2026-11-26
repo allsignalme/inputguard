@@ -85,15 +85,58 @@ func TestJSTables_Entities(t *testing.T) {
 	b.WriteString("];\n\n")
 	b.WriteString("/** Longest entity name html.UnescapeString accepts without its semicolon. */\n")
 	fmt.Fprintf(&b, "export const LONGEST_ENTITY_WITHOUT_SEMICOLON = %d;\n\n", longest)
-	b.WriteString("/** name:hex code point, separated by |. */\n")
+	fmt.Fprintf(&b, "/** Number of names ENTITY_DATA holds once expanded. */\nexport const ENTITY_COUNT = %d;\n\n", len(one))
+	b.WriteString("/**\n")
+	b.WriteString(" * Entities by code point, separated by |: the base-36 distance from the previous code point, \":\", then the\n")
+	b.WriteString(" * names. A name stands for name; — with a trailing ! also for the bare name (legacy entities), with a\n")
+	b.WriteString(" * trailing ~ for the bare name only.\n")
+	b.WriteString(" */\n")
 	b.WriteString("export const ENTITY_DATA =\n")
-	writeEntries(&b, sortedKeys(one), func(k string) string { return k + ":" + strconv.FormatInt(int64(one[k]), 16) })
+	groups, cps := entityGroups(one)
+	prev := rune(0)
+	writeEntries(&b, cps, func(k string) string {
+		cp := groups[k].cp
+		e := strconv.FormatInt(int64(cp-prev), 36) + ":" + strings.Join(groups[k].names, ",")
+		prev = cp
+		return e
+	})
 	b.WriteString("/** name:hex,hex (two code points), separated by |. */\n")
 	b.WriteString("export const ENTITY2_DATA =\n")
 	writeEntries(&b, sortedKeys(two), func(k string) string {
 		return k + ":" + strconv.FormatInt(int64(two[k][0]), 16) + "," + strconv.FormatInt(int64(two[k][1]), 16)
 	})
 	checkGenerated(t, filepath.Join(jsTablesDir, "entities.ts"), b.Bytes(), nil)
+}
+
+type entityGroup struct {
+	cp    rune
+	names []string
+}
+
+// entityGroups groups the entities by code point (keys are the code points as fixed-width hex, so that sorting the
+// keys sorts the code points). A legacy entity, valid with and without its semicolon, is written once.
+func entityGroups(one map[string]rune) (map[string]*entityGroup, []string) {
+	groups := map[string]*entityGroup{}
+	for _, name := range sortedKeys(one) {
+		cp := one[name]
+		var enc string
+		switch base, semi := strings.CutSuffix(name, ";"); {
+		case semi && one[base] == cp:
+			enc = base + "!"
+		case semi:
+			enc = base
+		case one[name+";"] == cp:
+			continue // written with its ; form
+		default:
+			enc = name + "~"
+		}
+		key := fmt.Sprintf("%08x", cp)
+		if groups[key] == nil {
+			groups[key] = &entityGroup{cp: cp}
+		}
+		groups[key].names = append(groups[key].names, enc)
+	}
+	return groups, sortedKeys(groups)
 }
 
 // windows1252Table reads html.replacementTable from the Go source.
